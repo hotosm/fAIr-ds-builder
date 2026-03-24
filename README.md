@@ -165,3 +165,7 @@ just publish hotosm/building-segmentation raw      # parquet + push to HF Hub (+
 ## License
 
 Tooling: GPL-3.0-or-later. Dataset imagery: CC-BY 4.0. Dataset labels: ODbL 1.0.
+
+## Disclosure
+
+LLM Claude was used to assist writing code and carefully reviwed !

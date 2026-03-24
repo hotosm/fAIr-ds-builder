@@ -36,19 +36,7 @@ uv run hot-oam-dataset --limit 0 --output-dir dataset --verbose
 uv run hot-oam-dataset --limit 20 --years-back 3 --output-dir dataset --verbose
 ```
 
-### CLI options
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--output-dir` | `dataset` | Root output directory |
-| `--years-back` | `5` | Number of years to look back |
-| `--zoom` | `19` | Tile zoom level |
-| `--limit` | `5` | Max projects to download (use `0` for all) |
-| `--discover-only` | false | Only list projects, skip downloads |
-| `--generate-parquet` | false | Generate HuggingFace-compatible Parquet from dataset |
-| `--push-to-hub` | none | Push Parquet dataset + dataset card to HuggingFace Hub |
-| `--push-raw` | none | Upload raw chips/labels/metadata to HuggingFace Hub under `raw/` |
-| `--verbose` | false | Enable debug logging |
+Run `uv run hot-oam-dataset --help` for all CLI options.
 
 ## Output Structure
 

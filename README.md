@@ -151,9 +151,9 @@ uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir data
 Requires [just](https://github.com/casey/just). Run `just` to list all available recipes.
 
 ```bash
-just check                                        # lint + format + typecheck + test
-just build-all                                    # build full dataset
-just publish hotosm/building-segmentation         # parquet + push to HF Hub
+just lint                                         # ruff lint + format + ty + pytest
+just build --limit 0 --years-back 3               # pass any CLI flags through
+just publish hotosm/building-segmentation raw      # parquet + push to HF Hub (+ raw)
 ```
 
 ## Data Sources & Licensing

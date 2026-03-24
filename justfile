@@ -4,57 +4,23 @@ default_output := "dataset"
 default:
     @just --list
 
-# Run ruff linter
+# Run all checks: ruff lint, ruff format, ty typecheck, pytest
 lint:
     uv run ruff check src/ tests/
-
-# Run ruff formatter check
-format-check:
     uv run ruff format --check src/ tests/
-
-# Auto-format code with ruff
-format:
-    uv run ruff format src/ tests/
-
-# Run ty type checker
-typecheck:
     uv run ty check src/
+    uv run pytest tests/ -v
 
-# Run pytest
+# Run tests only
 test:
     uv run pytest tests/ -v
 
-# Run all checks (lint + format + typecheck + test)
-check: lint format-check typecheck test
+# Build dataset. Pass extra CLI flags as needed (e.g. just build --limit 0 --years-back 3)
+build *args:
+    uv run hot-oam-dataset --output-dir {{ default_output }} --verbose {{ args }}
 
-# Discover validated OAM building projects without downloading
-discover output=default_output:
-    uv run hot-oam-dataset --discover-only --output-dir {{ output }} --verbose
-
-# Build dataset with default limit (5 projects)
-build output=default_output:
-    uv run hot-oam-dataset --output-dir {{ output }} --verbose
-
-# Build full dataset (all projects)
-build-all output=default_output:
-    uv run hot-oam-dataset --limit 0 --output-dir {{ output }} --verbose
-
-# Build dataset with custom limit and time range
-build-custom limit years_back output=default_output:
-    uv run hot-oam-dataset --limit {{ limit }} --years-back {{ years_back }} --output-dir {{ output }} --verbose
-
-# Generate HuggingFace Parquet from existing dataset
-parquet output=default_output:
-    uv run hot-oam-dataset --generate-parquet --output-dir {{ output }}
-
-# Push Parquet dataset to HuggingFace Hub
-push-hub repo_id output=default_output:
-    uv run hot-oam-dataset --push-to-hub {{ repo_id }} --output-dir {{ output }}
-
-# Upload raw chips/labels/metadata to HuggingFace Hub
-push-raw repo_id output=default_output:
-    uv run hot-oam-dataset --push-raw {{ repo_id }} --output-dir {{ output }}
-
-# Full publish: generate Parquet, push dataset and raw files to HuggingFace Hub
-publish repo_id output=default_output: (parquet output) (push-hub repo_id output) (push-raw repo_id output)
-    @echo "Published to https://huggingface.co/datasets/{{ repo_id }}"
+# Publish to HuggingFace Hub. Add "raw" to also upload raw files (e.g. just publish REPO raw)
+publish repo_id raw="":
+    uv run hot-oam-dataset --generate-parquet --output-dir {{ default_output }}
+    uv run hot-oam-dataset --push-to-hub {{ repo_id }} --output-dir {{ default_output }}
+    {{ if raw =~ "raw" { "uv run hot-oam-dataset --push-raw " + repo_id + " --output-dir " + default_output } else { "@echo 'Done (skipped raw upload)'" } }}

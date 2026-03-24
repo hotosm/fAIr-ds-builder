@@ -151,12 +151,9 @@ def _flatten_label_output(project_dir: Path):
     shutil.rmtree(osm_work_dir, ignore_errors=True)
 
 
-def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) -> dict:
-    chips_dir = project_dir / "chips"
-    labels_dir = project_dir / "labels"
-
-    chip_stems = set()
-    removed_chips = 0
+def _remove_corrupt_chips(chips_dir: Path, prefix: str) -> tuple[set[str], int]:
+    valid_stems: set[str] = set()
+    removed_count = 0
 
     for chip in list(chips_dir.glob(f"{prefix}-*.tif")):
         if chip.stat().st_size < MINIMUM_VALID_CHIP_BYTES:
@@ -164,36 +161,46 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
             aux = chip.with_suffix(".tif.aux.xml")
             if aux.exists():
                 aux.unlink()
-            removed_chips += 1
+            removed_count += 1
         else:
-            chip_stems.add(chip.stem)
+            valid_stems.add(chip.stem)
 
-    if removed_chips:
-        logger.info("Project #%d: removed %d corrupt/empty chips", project_id, removed_chips)
+    return valid_stems, removed_count
 
-    removed_orphan_labels = 0
+
+def _remove_orphan_labels(
+    labels_dir: Path, valid_chip_stems: set[str], prefix: str
+) -> tuple[int, int, int, int]:
+    removed_count = 0
     valid_pairs = 0
     empty_label_pairs = 0
     total_building_polygons = 0
 
-    if labels_dir.exists():
-        for label in list(labels_dir.glob(f"{prefix}-*.geojson")):
-            if label.stem not in chip_stems:
-                label.unlink()
-                removed_orphan_labels += 1
-                continue
+    if not labels_dir.exists():
+        return removed_count, valid_pairs, empty_label_pairs, total_building_polygons
 
-            data = json.loads(label.read_text())
-            feature_count = len(data.get("features", []))
-            total_building_polygons += feature_count
+    for label in list(labels_dir.glob(f"{prefix}-*.geojson")):
+        if label.stem not in valid_chip_stems:
+            label.unlink()
+            removed_count += 1
+            continue
 
-            if feature_count == 0:
-                empty_label_pairs += 1
+        data = json.loads(label.read_text())
+        feature_count = len(data.get("features", []))
+        total_building_polygons += feature_count
 
-            valid_pairs += 1
+        if feature_count == 0:
+            empty_label_pairs += 1
 
-    removed_unpaired_chips = 0
-    for stem in list(chip_stems):
+        valid_pairs += 1
+
+    return removed_count, valid_pairs, empty_label_pairs, total_building_polygons
+
+
+def _remove_unpaired_chips(chips_dir: Path, labels_dir: Path, valid_chip_stems: set[str]) -> int:
+    removed_count = 0
+
+    for stem in list(valid_chip_stems):
         label_path = labels_dir / f"{stem}.geojson" if labels_dir.exists() else None
         if label_path and not label_path.exists():
             chip_path = chips_dir / f"{stem}.tif"
@@ -202,7 +209,25 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
                 aux = chip_path.with_suffix(".tif.aux.xml")
                 if aux.exists():
                     aux.unlink()
-                removed_unpaired_chips += 1
+                removed_count += 1
+
+    return removed_count
+
+
+def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) -> dict:
+    chips_dir = project_dir / "chips"
+    labels_dir = project_dir / "labels"
+
+    valid_chip_stems, removed_corrupt = _remove_corrupt_chips(chips_dir, prefix)
+
+    if removed_corrupt:
+        logger.info("Project #%d: removed %d corrupt/empty chips", project_id, removed_corrupt)
+
+    removed_orphans, valid_pairs, empty_label_pairs, total_building_polygons = (
+        _remove_orphan_labels(labels_dir, valid_chip_stems, prefix)
+    )
+
+    removed_unpaired = _remove_unpaired_chips(chips_dir, labels_dir, valid_chip_stems)
 
     logger.info(
         "Project #%d: %d valid pairs (%d with buildings, %d empty), "
@@ -213,9 +238,9 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
         valid_pairs - empty_label_pairs,
         empty_label_pairs,
         total_building_polygons,
-        removed_orphan_labels,
-        removed_unpaired_chips,
-        removed_chips,
+        removed_orphans,
+        removed_unpaired,
+        removed_corrupt,
     )
 
     size_bytes = _compute_directory_size(project_dir, ["chips", "labels"])
@@ -226,20 +251,20 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
         "pairs_without_buildings": empty_label_pairs,
         "total_building_polygons": total_building_polygons,
         "size_bytes": size_bytes,
-        "removed_orphan_labels": removed_orphan_labels,
-        "removed_unpaired_chips": removed_unpaired_chips,
-        "removed_corrupt_chips": removed_chips,
+        "removed_orphan_labels": removed_orphans,
+        "removed_unpaired_chips": removed_unpaired,
+        "removed_corrupt_chips": removed_corrupt,
     }
 
 
 def _compute_directory_size(project_dir: Path, subdirs: list[str]) -> int:
     total = 0
     for subdir in subdirs:
-        d = project_dir / subdir
-        if d.exists():
-            for f in d.rglob("*"):
-                if f.is_file():
-                    total += f.stat().st_size
+        subdirectory = project_dir / subdir
+        if subdirectory.exists():
+            for file_path in subdirectory.rglob("*"):
+                if file_path.is_file():
+                    total += file_path.stat().st_size
     return total
 
 
@@ -290,23 +315,9 @@ def build_all_projects(
     logger.info("Dataset build complete. Output: %s", config.output_dir)
 
 
-def aggregate_dataset_stats(output_dir: Path, dataset_version: str = "1.0.0"):
-    project_dirs = sorted(output_dir.glob("project_*"))
-    if not project_dirs:
-        return
-
-    total_pairs = 0
-    total_with_buildings = 0
-    total_without_buildings = 0
-    total_building_polygons = 0
-    total_size_bytes = 0
-    project_count = 0
-    countries: Counter[str] = Counter()
-    organisations: Counter[str] = Counter()
-
-    project_stats = []
-
-    for project_dir in project_dirs:
+def _collect_per_project_stats(output_dir: Path) -> list[tuple[dict, dict]]:
+    collected = []
+    for project_dir in sorted(output_dir.glob("project_*")):
         metadata_path = project_dir / "metadata.json"
         if not metadata_path.exists():
             continue
@@ -316,7 +327,22 @@ def aggregate_dataset_stats(output_dir: Path, dataset_version: str = "1.0.0"):
         if not stats:
             continue
 
-        project_count += 1
+        collected.append((metadata, stats))
+
+    return collected
+
+
+def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version: str) -> dict:
+    total_pairs = 0
+    total_with_buildings = 0
+    total_without_buildings = 0
+    total_building_polygons = 0
+    total_size_bytes = 0
+    countries: Counter[str] = Counter()
+    organisations: Counter[str] = Counter()
+    project_stats = []
+
+    for metadata, stats in collected:
         total_pairs += stats["valid_pairs"]
         total_with_buildings += stats["pairs_with_buildings"]
         total_without_buildings += stats["pairs_without_buildings"]
@@ -339,10 +365,10 @@ def aggregate_dataset_stats(output_dir: Path, dataset_version: str = "1.0.0"):
             }
         )
 
-    aggregate = {
+    return {
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "dataset_version": dataset_version,
-        "total_projects": project_count,
+        "total_projects": len(collected),
         "total_tile_pairs": total_pairs,
         "tiles_with_buildings": total_with_buildings,
         "tiles_without_buildings": total_without_buildings,
@@ -361,6 +387,14 @@ def aggregate_dataset_stats(output_dir: Path, dataset_version: str = "1.0.0"):
         "organisations": dict(organisations.most_common()),
         "projects": project_stats,
     }
+
+
+def aggregate_dataset_stats(output_dir: Path, dataset_version: str = "1.0.0"):
+    collected = _collect_per_project_stats(output_dir)
+    if not collected:
+        return
+
+    aggregate = _build_aggregate_report(collected, dataset_version)
 
     stats_path = output_dir / "dataset_stats.json"
     stats_path.write_text(json.dumps(aggregate, indent=2))

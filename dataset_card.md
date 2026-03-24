@@ -179,8 +179,8 @@ This dataset supports humanitarian applications including disaster response, ris
 
 This dataset uses a dual-license model:
 
-- **Imagery (image tiles):** CC-BY 4.0 — sourced from OpenAerialMap. All imagery uploaded to OAM is licensed as CC-BY 4.0, with attribution to "contributors of Open Imagery Network." Original copyright remains with the imagery provider.
-- **Labels (building footprints):** ODbL 1.0 — sourced from OpenStreetMap. Requires attribution to "OpenStreetMap contributors" and share-alike for derivative databases.
+- **Imagery (image tiles):** CC-BY 4.0 - sourced from OpenAerialMap. All imagery uploaded to OAM is licensed as CC-BY 4.0, with attribution to "contributors of Open Imagery Network." Original copyright remains with the imagery provider.
+- **Labels (building footprints):** ODbL 1.0 - sourced from OpenStreetMap. Requires attribution to "OpenStreetMap contributors" and share-alike for derivative databases.
 - **Dataset tooling:** GPL-3.0-or-later
 
 ## Additional Information

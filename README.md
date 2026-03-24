@@ -18,7 +18,7 @@ List all validated OAM building projects from the last 5 years:
 uv run hot-oam-dataset --discover-only --verbose
 ```
 
-### Build dataset (default — 5 projects)
+### Build dataset (default - 5 projects)
 
 ```bash
 uv run hot-oam-dataset --output-dir dataset --verbose
@@ -158,10 +158,20 @@ uv run hot-oam-dataset --push-to-hub hotosm/building-segmentation --output-dir d
 uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir dataset
 ```
 
+## Just Recipes
+
+Requires [just](https://github.com/casey/just). Run `just` to list all available recipes.
+
+```bash
+just check                                        # lint + format + typecheck + test
+just build-all                                    # build full dataset
+just publish hotosm/building-segmentation         # parquet + push to HF Hub
+```
+
 ## Data Sources & Licensing
 
-- **Imagery:** [OpenAerialMap](https://openaerialmap.org/) — CC-BY 4.0, attribution to "contributors of Open Imagery Network"
-- **Labels:** [OpenStreetMap](https://www.openstreetmap.org/) — ODbL 1.0, attribution to "OpenStreetMap contributors"
+- **Imagery:** [OpenAerialMap](https://openaerialmap.org/) - CC-BY 4.0, attribution to "contributors of Open Imagery Network"
+- **Labels:** [OpenStreetMap](https://www.openstreetmap.org/) - ODbL 1.0, attribution to "OpenStreetMap contributors"
 - **Project metadata:** [HOT Tasking Manager API](https://tasking-manager-production-api.hotosm.org/api/docs)
 
 ## License

@@ -131,16 +131,20 @@ def main(argv: list[str] | None = None):
     build_all_projects(projects, config, dataset_version=args.dataset_version)
 
 
-def _print_projects_table(projects):
+def _truncate(text: str, max_length: int) -> str:
+    return text[:max_length] if len(text) > max_length else text
+
+
+def _print_projects_table(projects: list) -> None:
     header = f"{'ID':<8} {'Name':<50} {'Validated%':<12} {'Country':<20} {'Org':<25}"
     separator = "-" * len(header)
     print(f"\n{separator}")
     print(header)
     print(separator)
     for p in projects:
-        name = p.name[:48] if len(p.name) > 48 else p.name
-        country = p.country[:18] if len(p.country) > 18 else p.country
-        org = p.organisation[:23] if len(p.organisation) > 23 else p.organisation
+        name = _truncate(p.name, 48)
+        country = _truncate(p.country, 18)
+        org = _truncate(p.organisation, 23)
         print(f"{p.project_id:<8} {name:<50} {p.percent_validated:<12} {country:<20} {org:<25}")
     print(separator)
     print(f"Total: {len(projects)} projects\n")

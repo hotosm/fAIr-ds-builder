@@ -24,8 +24,7 @@ def _label(path: Path, features: int = 1):
             {
                 "type": "FeatureCollection",
                 "features": [
-                    {"type": "Feature", "geometry": {}, "properties": {}}
-                    for _ in range(features)
+                    {"type": "Feature", "geometry": {}, "properties": {}} for _ in range(features)
                 ],
             }
         )

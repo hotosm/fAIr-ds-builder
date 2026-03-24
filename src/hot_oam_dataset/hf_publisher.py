@@ -159,9 +159,7 @@ def push_raw_to_hub(dataset_dir: Path, repo_id: str, dataset_version: str = "1.0
         revision="raw",
         ignore_patterns=["parquet/*", ".cache/*"],
     )
-    logger.info(
-        "Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/raw", repo_id
-    )
+    logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/raw", repo_id)
 
 
 def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:

@@ -70,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="REPO_ID",
         help=(
-            "Push dataset to HuggingFace Hub (e.g. hotosm/building-segmentation). "
+            "Push dataset to HuggingFace Hub (e.g. hotosm/vhr-building-segmentation). "
             "If omitted, uses HF_DATASET_REPO_ID environment variable"
         ),
     )

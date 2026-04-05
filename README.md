@@ -128,7 +128,7 @@ Generated after every build, contains aggregate metadata for the entire dataset:
 Set repo once for both push commands:
 
 ```bash
-export HF_DATASET_REPO_ID=hotosm/building-segmentation
+export HF_DATASET_REPO_ID=hotosm/vhr-building-segmentation
 ```
 
 ### Login
@@ -154,7 +154,7 @@ This generates a `parquet/data.parquet` file with embedded images and masks, lab
 ### Push to HuggingFace Hub
 
 ```bash
-uv run hot-oam-dataset --push-to-hub hotosm/building-segmentation --output-dir dataset
+uv run hot-oam-dataset --push-to-hub hotosm/vhr-building-segmentation --output-dir dataset
 ```
 
 With env repo id:
@@ -174,7 +174,7 @@ This will:
 Upload the full raw dataset (chips, labels, metadata) under `raw/` in the same repo:
 
 ```bash
-uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir dataset
+uv run hot-oam-dataset --push-raw hotosm/vhr-building-segmentation --output-dir dataset
 ```
 
 With env repo id:
@@ -191,8 +191,8 @@ Run the build again, then re-push:
 
 ```bash
 uv run hot-oam-dataset --limit 0 --output-dir dataset
-uv run hot-oam-dataset --push-to-hub hotosm/building-segmentation --output-dir dataset
-uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir dataset
+uv run hot-oam-dataset --push-to-hub hotosm/vhr-building-segmentation --output-dir dataset
+uv run hot-oam-dataset --push-raw hotosm/vhr-building-segmentation --output-dir dataset
 ```
 
 ## Quick visualization
@@ -207,7 +207,7 @@ Requires [just](https://github.com/casey/just). Run `just` to list all available
 ```bash
 just lint                                         # ruff lint + format + ty + pytest
 just build --limit 0 --years-back 3               # pass any CLI flags through
-just publish hotosm/building-segmentation raw      # parquet + push to HF Hub (+ raw)
+just publish hotosm/vhr-building-segmentation raw   # parquet + push to HF Hub (+ raw)
 ```
 
 ## Data Sources & Licensing

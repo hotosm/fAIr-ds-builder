@@ -294,33 +294,20 @@ def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
     return bounds
 
 
-def _update_dataset_card(dataset_dir: Path, num_examples: int, dataset_version: str) -> None:
+def _update_dataset_card(
+    dataset_dir: Path,
+    num_examples: int,
+    dataset_version: str,
+) -> None:
     dataset_card_path = Path("dataset_card.md")
     if not dataset_card_path.exists():
         return
 
     card_text = dataset_card_path.read_text()
-
-    card_text = _update_front_matter_num_examples(card_text, num_examples)
     card_text = _upsert_generated_stats_block(card_text, dataset_dir, num_examples, dataset_version)
 
     dataset_card_path.write_text(card_text)
     logger.info("Updated dataset card dynamic stats (%d examples)", num_examples)
-
-
-def _update_front_matter_num_examples(card_text: str, num_examples: int) -> str:
-    front_matter_match = re.match(r"^(---\n.*?\n---\n)", card_text, flags=re.DOTALL)
-    if not front_matter_match:
-        return card_text
-
-    front_matter = front_matter_match.group(1)
-    updated_front_matter = re.sub(
-        r"(num_examples:\s*)\d+",
-        rf"\g<1>{num_examples}",
-        front_matter,
-        count=1,
-    )
-    return updated_front_matter + card_text[len(front_matter) :]
 
 
 def _upsert_generated_stats_block(

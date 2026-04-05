@@ -190,6 +190,10 @@ This dataset uses a dual-license model:
 
 Built using the [hot-oam-dataset](https://github.com/hotosm/tm-oam-ds-builder) tool by HOT.
 
+### Contact
+
+For questions, feedback, or collaboration inquiries: [fair@hotosm.org](mailto:fair@hotosm.org)
+
 ### Citation
 
 ```bibtex
@@ -198,7 +202,7 @@ Built using the [hot-oam-dataset](https://github.com/hotosm/tm-oam-ds-builder) t
   author={Humanitarian OpenStreetMap Team},
   year={2026},
   publisher={Hugging Face},
-  howpublished={\url{https://huggingface.co/datasets/hotosm/building-segmentation}}
+  howpublished={\url{https://huggingface.co/datasets/hotosm/vhr-building-segmentation}}
 }
 ```
 

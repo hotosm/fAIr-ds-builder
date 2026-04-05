@@ -235,7 +235,11 @@ def _push_dataset_with_card_retry(dataset: Dataset, repo_id: str, dataset_versio
         dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=commit_message)
         return
     except TypeError as exc:
-        if "unsupported operand type(s) for -=" not in str(exc):
+        known_metadata_bugs = [
+            "unsupported operand type(s) for -=",
+            "argument of type 'NoneType' is not iterable",
+        ]
+        if not any(pattern in str(exc) for pattern in known_metadata_bugs):
             raise
 
         logger.warning(

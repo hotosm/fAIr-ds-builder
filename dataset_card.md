@@ -208,7 +208,7 @@ Powered by data from [OpenStreetMap](https://www.openstreetmap.org/) contributor
 
 <!-- AUTO_STATS_START -->
 ## Generated Stats
-- Dataset version: 1.0.0
+- Dataset version: 0.2.0
 - Tile pairs (num_examples): 72,363
 - Total projects: 93
 - Tiles with features: 46,469

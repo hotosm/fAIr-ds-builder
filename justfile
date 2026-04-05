@@ -4,11 +4,17 @@ default_output := "dataset"
 default:
     @just --list
 
-# Run all checks: ruff lint, ruff format, ty typecheck, pytest
+# Install deps and pre-commit hooks
+setup:
+    uv sync --all-groups
+    uv run pre-commit install --hook-type commit-msg --hook-type pre-commit --hook-type pre-push
+
+# Run all checks: ruff fix + format, ty typecheck, pre-commit hooks, pytest
 lint:
-    uv run ruff check src/ tests/
-    uv run ruff format --check src/ tests/
+    uv run ruff check --fix src/ tests/
+    uv run ruff format src/ tests/
     uv run ty check src/
+    uv run pre-commit run --all-files
     uv run pytest tests/ -v
 
 # Run tests only

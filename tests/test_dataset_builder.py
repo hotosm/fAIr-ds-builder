@@ -122,50 +122,56 @@ def test_lon_lat_to_tile_zoom_doubles_coords():
     assert y19 in (y18 * 2, y18 * 2 + 1)
 
 
-def _mock_stream(mocker, status_code: int):
-    ctx = mocker.MagicMock()
-    ctx.__enter__ = mocker.MagicMock(return_value=mocker.MagicMock(status_code=status_code))
-    ctx.__exit__ = mocker.MagicMock(return_value=False)
-    return mocker.patch("hot_oam_dataset.dataset_builder.httpx.stream", return_value=ctx)
+def _mock_get(mocker, status_code: int):
+    return mocker.patch(
+        "hot_oam_dataset.dataset_builder.httpx.get",
+        return_value=mocker.MagicMock(status_code=status_code),
+    )
 
 
 def test_probe_returns_true_on_200(mocker):
-    _mock_stream(mocker, 200)
+    _mock_get(mocker, 200)
     assert probe_imagery_url(OAM_URL, BBOX, 19) is True
 
 
 def test_probe_returns_false_on_404(mocker):
-    _mock_stream(mocker, 404)
+    mocker.patch("hot_oam_dataset.dataset_builder.time.sleep")
+    _mock_get(mocker, 404)
     assert probe_imagery_url(OAM_URL, BBOX, 19) is False
 
 
 def test_probe_returns_false_on_network_error(mocker):
+    mocker.patch("hot_oam_dataset.dataset_builder.time.sleep")
     mocker.patch(
-        "hot_oam_dataset.dataset_builder.httpx.stream",
+        "hot_oam_dataset.dataset_builder.httpx.get",
         side_effect=httpx.RequestError("timeout"),
     )
     assert probe_imagery_url(OAM_URL, BBOX, 19) is False
 
 
+def test_probe_retries_on_transient_failure(mocker):
+    mocker.patch("hot_oam_dataset.dataset_builder.time.sleep")
+    mocker.patch(
+        "hot_oam_dataset.dataset_builder.httpx.get",
+        side_effect=[
+            httpx.RequestError("timeout"),
+            mocker.MagicMock(status_code=200),
+        ],
+    )
+    assert probe_imagery_url(OAM_URL, BBOX, 19, max_retries=2) is True
+
+
 def test_probe_substitutes_tile_coords(mocker):
-    captured = {}
-
-    def fake_stream(method, url, **kwargs):
-        captured["url"] = url
-        ctx = mocker.MagicMock()
-        ctx.__enter__ = mocker.MagicMock(return_value=mocker.MagicMock(status_code=200))
-        ctx.__exit__ = mocker.MagicMock(return_value=False)
-        return ctx
-
-    mocker.patch("hot_oam_dataset.dataset_builder.httpx.stream", side_effect=fake_stream)
+    mock = _mock_get(mocker, 200)
     probe_imagery_url(OAM_URL, BBOX, 19)
 
-    assert "{z}" not in captured["url"]
-    assert "{x}" not in captured["url"]
-    assert "{y}" not in captured["url"]
+    called_url = mock.call_args[0][0]
+    assert "{z}" not in called_url
+    assert "{x}" not in called_url
+    assert "{y}" not in called_url
 
 
 def test_probe_skips_on_empty_bbox(mocker):
-    stream = mocker.patch("hot_oam_dataset.dataset_builder.httpx.stream")
+    mock = mocker.patch("hot_oam_dataset.dataset_builder.httpx.get")
     assert probe_imagery_url(OAM_URL, [], 19) is True
-    stream.assert_not_called()
+    mock.assert_not_called()

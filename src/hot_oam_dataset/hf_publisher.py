@@ -154,6 +154,7 @@ def push_to_hub(
         card = DatasetCard(dataset_card_path.read_text())
         card.push_to_hub(repo_id, commit_message=f"Update dataset card v{dataset_version}")
 
+    _tag_hf_revision(repo_id, dataset_version)
     logger.info("Dataset published to https://huggingface.co/datasets/%s", repo_id)
 
 
@@ -215,6 +216,16 @@ def push_raw_to_hub(
         commit_message=f"Upload raw dataset v{dataset_version}",
     )
     logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/main/raw", repo_id)
+
+
+def _tag_hf_revision(repo_id: str, dataset_version: str) -> None:
+    tag = f"v{dataset_version}"
+    api = HfApi()
+    try:
+        api.create_tag(repo_id=repo_id, repo_type="dataset", tag=tag, tag_message=tag)
+        logger.info("Tagged HF dataset revision: %s", tag)
+    except Exception as exc:
+        logger.warning("Could not create HF tag %s: %s", tag, exc)
 
 
 def _push_dataset_with_card_retry(dataset: Dataset, repo_id: str, dataset_version: str) -> None:
@@ -330,9 +341,26 @@ def _upsert_generated_stats_block(
                 f"- Tiles with features: {stats.get('tiles_with_buildings', 0):,}",
                 f"- Tiles without features: {stats.get('tiles_without_buildings', 0):,}",
                 f"- Total polygons: {stats.get('total_building_polygons', 0):,}",
+                f"- Avg buildings per tile: {stats.get('avg_buildings_per_tile', 0)}",
+                f"- Total area: ~{stats.get('total_area_sq_km', 0):,.1f} sq km",
+                f"- Countries: {len(stats.get('countries', {}))}",
                 f"- Generated at: {stats.get('generated_at', '')}",
             ]
         )
+
+        country_details = stats.get("country_details", {})
+        if country_details:
+            lines.append("")
+            lines.append("### Coverage by Country")
+            lines.append("")
+            lines.append("| Country | Projects | Tiles | Buildings | Area (sq km) |")
+            lines.append("|---------|----------|-------|-----------|-------------|")
+            for country, info in country_details.items():
+                lines.append(
+                    f"| {country} | {info['projects']} "
+                    f"| {info['tiles']:,} | {info['polygons']:,} "
+                    f"| {info['area_sq_km']:,.1f} |"
+                )
 
     lines.append(CARD_AUTO_STATS_END)
     block = "\n" + "\n".join(lines) + "\n"

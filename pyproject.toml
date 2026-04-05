@@ -29,8 +29,20 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [dependency-groups]
 dev = [
+    "commitizen>=4.0",
+    "pre-commit>=4.0",
     "pytest>=9.0.2",
     "pytest-mock>=3.15.1",
     "ruff>=0.15.7",
     "ty>=0.0.24",
 ]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "uv"
+tag_format = "v$version"
+version_files = [
+    "src/hot_oam_dataset/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"

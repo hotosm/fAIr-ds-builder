@@ -5,6 +5,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from hot_oam_dataset import __version__
 from hot_oam_dataset.dataset_builder import DatasetConfig, build_all_projects
 from hot_oam_dataset.hf_publisher import (
     compress_projects,
@@ -96,8 +97,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dataset-version",
         type=str,
-        default="1.0.0",
-        help="Dataset version string embedded in stats and Parquet metadata (default: 1.0.0)",
+        default=__version__,
+        help=f"Dataset version embedded in stats and Parquet metadata (default: {__version__})",
     )
     parser.add_argument(
         "--feature-type",

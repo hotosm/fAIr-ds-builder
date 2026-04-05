@@ -58,9 +58,6 @@ dataset_info:
       dtype: float64
     - name: bbox_north
       dtype: float64
-  splits:
-    - name: train
-      num_examples: 61238
 ---
 
 # HOT Building Segmentation Dataset
@@ -191,7 +188,7 @@ This dataset uses a dual-license model:
 
 ### Dataset Curators
 
-Built using the [hot-oam-dataset](https://github.com/hotosm/building-tm-ai-datasets) tool by HOT.
+Built using the [hot-oam-dataset](https://github.com/hotosm/tm-oam-ds-builder) tool by HOT.
 
 ### Citation
 
@@ -212,10 +209,39 @@ Powered by data from [OpenStreetMap](https://www.openstreetmap.org/) contributor
 <!-- AUTO_STATS_START -->
 ## Generated Stats
 - Dataset version: 1.0.0
-- Tile pairs (num_examples): 61,238
-- Total projects: 50
-- Tiles with features: 40,980
-- Tiles without features: 20,258
-- Total polygons: 633,758
-- Generated at: 2026-04-03T11:27:38.120097+00:00
+- Tile pairs (num_examples): 72,363
+- Total projects: 93
+- Tiles with features: 46,469
+- Tiles without features: 25,894
+- Total polygons: 715,775
+- Avg buildings per tile: 9.9
+- Total area: ~782.7 sq km
+- Countries: 21
+- Generated at: 2026-04-05T17:38:27.324614+00:00
+
+### Coverage by Country
+
+| Country | Projects | Tiles | Buildings | Area (sq km) |
+|---------|----------|-------|-----------|-------------|
+| Myanmar | 3 | 43,879 | 432,324 | 400.3 |
+| Peru | 5 | 6,778 | 53,290 | 133.3 |
+| Mozambique | 6 | 4,992 | 73,379 | 39.4 |
+| Eswatini | 2 | 4,983 | 9,290 | 50.3 |
+| Mexico | 20 | 2,753 | 11,269 | 33.5 |
+| Japan | 2 | 1,420 | 5,549 | 11.8 |
+| Sierra Leone | 7 | 1,306 | 48,911 | 19.1 |
+| Philippines | 11 | 1,203 | 6,100 | 28.2 |
+| Tajikistan | 2 | 1,150 | 4,500 | 9.7 |
+| Kenya | 11 | 1,039 | 4,030 | 8.9 |
+| Cuba | 1 | 692 | 10,000 | 18.8 |
+| Liberia | 5 | 537 | 10,648 | 6.5 |
+| Malawi | 2 | 367 | 13,579 | 3.8 |
+| Tanzania | 4 | 285 | 4,489 | 4.2 |
+| Ghana | 4 | 212 | 24,555 | 3.2 |
+| Colombia | 1 | 193 | 444 | 5.5 |
+| Iraq | 1 | 188 | 660 | 1.3 |
+| Uganda | 3 | 173 | 1,177 | 2.1 |
+| Trinidad and Tobago | 1 | 134 | 1,077 | 1.8 |
+| Argentina | 1 | 71 | 391 | 0.5 |
+| Nigeria | 1 | 8 | 113 | 0.3 |
 <!-- AUTO_STATS_END -->

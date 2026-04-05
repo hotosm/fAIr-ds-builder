@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import shutil
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 TILE_ZOOM = 19
 TILE_PREFIX = "OAM"
 MINIMUM_VALID_CHIP_BYTES = 5000
+PROBE_MAX_RETRIES = 3
+PROBE_TIMEOUT = 15
+PROBE_BACKOFF_BASE = 2
 
 
 @dataclass
@@ -41,7 +45,12 @@ def _lon_lat_to_tile(lon: float, lat: float, zoom: int) -> tuple[int, int]:
     return x, y
 
 
-def probe_imagery_url(imagery_url: str, bbox: list[float], zoom: int) -> bool:
+def probe_imagery_url(
+    imagery_url: str,
+    bbox: list[float],
+    zoom: int,
+    max_retries: int = PROBE_MAX_RETRIES,
+) -> bool:
     if not bbox or len(bbox) < 4:
         return True
 
@@ -51,11 +60,31 @@ def probe_imagery_url(imagery_url: str, bbox: list[float], zoom: int) -> bool:
 
     probe_url = imagery_url.replace("{z}", str(zoom)).replace("{x}", str(x)).replace("{y}", str(y))
 
-    try:
-        with httpx.stream("GET", probe_url, timeout=10, follow_redirects=True) as response:
-            return response.status_code < 400
-    except httpx.RequestError:
-        return False
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = httpx.get(probe_url, timeout=PROBE_TIMEOUT, follow_redirects=True)
+            if response.status_code < 400:
+                return True
+            logger.debug(
+                "Probe attempt %d/%d got HTTP %d for %s",
+                attempt,
+                max_retries,
+                response.status_code,
+                probe_url,
+            )
+        except httpx.RequestError as exc:
+            logger.debug(
+                "Probe attempt %d/%d failed for %s: %s",
+                attempt,
+                max_retries,
+                probe_url,
+                exc,
+            )
+
+        if attempt < max_retries:
+            time.sleep(PROBE_BACKOFF_BASE**attempt)
+
+    return False
 
 
 def build_project_dataset(project: TaskingManagerProject, config: DatasetConfig):
@@ -360,14 +389,30 @@ def _collect_per_project_stats(output_dir: Path) -> list[tuple[dict, dict]]:
     return collected
 
 
+def _bbox_area_sq_km(bbox: list[float]) -> float:
+    if not bbox or len(bbox) < 4:
+        return 0.0
+    west, south, east, north = bbox
+    lat_mid = math.radians((south + north) / 2)
+    km_per_deg_lat = 111.32
+    km_per_deg_lon = 111.32 * math.cos(lat_mid)
+    width_km = abs(east - west) * km_per_deg_lon
+    height_km = abs(north - south) * km_per_deg_lat
+    return round(width_km * height_km, 2)
+
+
 def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version: str) -> dict:
     total_pairs = 0
     total_with_buildings = 0
     total_without_buildings = 0
     total_building_polygons = 0
     total_size_bytes = 0
+    total_area_sq_km = 0.0
     countries: Counter[str] = Counter()
     organisations: Counter[str] = Counter()
+    country_tiles: Counter[str] = Counter()
+    country_polygons: Counter[str] = Counter()
+    country_area: Counter[str] = Counter()
     project_stats = []
 
     for metadata, stats in collected:
@@ -376,22 +421,41 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         total_without_buildings += stats["pairs_without_buildings"]
         total_building_polygons += stats["total_building_polygons"]
         total_size_bytes += stats.get("size_bytes", 0)
-        countries[metadata.get("country", "Unknown")] += 1
+
+        country = metadata.get("country", "Unknown")
+        countries[country] += 1
         organisations[metadata.get("organisation", "Unknown")] += 1
+        country_tiles[country] += stats["valid_pairs"]
+        country_polygons[country] += stats["total_building_polygons"]
+
+        area = _bbox_area_sq_km(metadata.get("bbox", []))
+        total_area_sq_km += area
+        country_area[country] += area
 
         project_stats.append(
             {
                 "project_id": metadata["project_id"],
                 "name": metadata["name"],
-                "country": metadata.get("country", ""),
+                "country": country,
                 "organisation": metadata.get("organisation", ""),
                 "valid_pairs": stats["valid_pairs"],
                 "pairs_with_buildings": stats["pairs_with_buildings"],
                 "pairs_without_buildings": stats["pairs_without_buildings"],
                 "total_building_polygons": stats["total_building_polygons"],
+                "area_sq_km": area,
                 "size_mb": round(stats.get("size_bytes", 0) / (1024 * 1024), 1),
             }
         )
+
+    country_details = {
+        c: {
+            "projects": countries[c],
+            "tiles": country_tiles[c],
+            "polygons": country_polygons[c],
+            "area_sq_km": round(country_area[c], 2),
+        }
+        for c in countries
+    }
 
     return {
         "generated_at": datetime.now(tz=UTC).isoformat(),
@@ -404,6 +468,7 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         "avg_buildings_per_tile": (
             round(total_building_polygons / total_pairs, 1) if total_pairs else 0
         ),
+        "total_area_sq_km": round(total_area_sq_km, 2),
         "tile_size_pixels": 256,
         "zoom_level": TILE_ZOOM,
         "tile_prefix": TILE_PREFIX,
@@ -412,6 +477,7 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         "label_format": "GeoJSON",
         "total_size_gb": round(total_size_bytes / (1024**3), 2),
         "countries": dict(countries.most_common()),
+        "country_details": dict(sorted(country_details.items(), key=lambda x: -x[1]["tiles"])),
         "organisations": dict(organisations.most_common()),
         "projects": project_stats,
     }

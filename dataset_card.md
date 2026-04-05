@@ -103,6 +103,7 @@ dataset/
     data.parquet                   # HuggingFace Parquet with embedded images and masks
   projects_summary.json
   projects_map.geojson
+  dataset_stats.json
 ```
 
 ### Data Fields
@@ -123,8 +124,9 @@ dataset/
 **Metadata:**
 - `metadata.json`: Project-level information (TM project ID, name, imagery URL, country, validation status)
 - `aoi.geojson`: Project area of interest boundary
-- `projects_summary.json`: Summary of all included projects
-- `projects_map.geojson`: Map of all project areas
+- [`projects_summary.json`](https://huggingface.co/datasets/hotosm/vhr-building-segmentation/blob/main/projects_summary.json): Summary of all included projects
+- [`projects_map.geojson`](https://huggingface.co/datasets/hotosm/vhr-building-segmentation/blob/main/projects_map.geojson): Map of all project areas
+- [`dataset_stats.json`](https://huggingface.co/datasets/hotosm/vhr-building-segmentation/blob/main/dataset_stats.json): Aggregate dataset statistics
 
 ### Data Splits
 

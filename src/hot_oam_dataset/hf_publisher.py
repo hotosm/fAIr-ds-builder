@@ -202,11 +202,12 @@ def push_raw_to_hub(
     api = HfApi()
     api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
 
-    ignore = ["parquet/*", ".cache/*"]
+    root_level_files = ["projects_map.geojson", "dataset_stats.json", "projects_summary.json"]
+    ignore = ["parquet/*", ".cache/*"] + root_level_files
     if compress:
         ignore.extend(["*/chips/*", "*/masks/*", "*/labels/*"])
 
-    logger.info("Uploading raw dataset folder to %s (raw/ on main)", repo_id)
+    logger.info("Uploading raw project data to %s (raw/ on main)", repo_id)
     api.upload_folder(
         folder_path=str(dataset_dir),
         path_in_repo="raw",
@@ -215,6 +216,18 @@ def push_raw_to_hub(
         ignore_patterns=ignore,
         commit_message=f"Upload raw dataset v{dataset_version}",
     )
+
+    for filename in root_level_files:
+        filepath = dataset_dir / filename
+        if filepath.exists():
+            api.upload_file(
+                path_or_fileobj=str(filepath),
+                path_in_repo=filename,
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"Upload {filename} v{dataset_version}",
+            )
+
     logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/main/raw", repo_id)
 
 

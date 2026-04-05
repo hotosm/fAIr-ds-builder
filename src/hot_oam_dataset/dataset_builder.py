@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 from geomltoolkits.downloader import osm as osm_downloader
 from geomltoolkits.downloader import tms as tms_downloader
+from geomltoolkits.raster.burn import burn_labels
 
 from hot_oam_dataset.tm_client import TaskingManagerProject
 
@@ -28,6 +29,8 @@ class DatasetConfig:
     prefix: str = TILE_PREFIX
     georeference: bool = True
     feature_type: str = "building"
+    burn_binary_masks: bool = True
+    burn_value: int = 255
 
 
 def _lon_lat_to_tile(lon: float, lat: float, zoom: int) -> tuple[int, int]:
@@ -128,6 +131,9 @@ async def _download_chips_and_labels(
 
     _flatten_label_output(project_dir)
 
+    if config.burn_binary_masks:
+        _burn_project_binary_masks(project_dir, config)
+
     stats = validate_and_clean_project(project_dir, config.prefix, project.project_id)
     _update_metadata_with_stats(project_dir, stats)
 
@@ -149,6 +155,28 @@ def _flatten_label_output(project_dir: Path):
         osm_result.rename(labels_dir / "osm-result.geojson")
 
     shutil.rmtree(osm_work_dir, ignore_errors=True)
+
+
+def _burn_project_binary_masks(project_dir: Path, config: DatasetConfig):
+    labels_path = project_dir / "labels" / "osm-result.geojson"
+    chips_dir = project_dir / "chips"
+    masks_dir = project_dir / "masks"
+
+    if not labels_path.exists() or not chips_dir.exists():
+        logger.warning(
+            "Skipping mask burn for %s because required inputs are missing",
+            project_dir.name,
+        )
+        return
+
+    burn_labels(
+        labels_path=str(labels_path),
+        chips_dir=str(chips_dir),
+        output_dir=str(masks_dir),
+        burn_value=config.burn_value,
+    )
+
+    logger.info("Generated binary masks in %s", masks_dir)
 
 
 def _remove_corrupt_chips(chips_dir: Path, prefix: str) -> tuple[set[str], int]:

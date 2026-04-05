@@ -1,15 +1,26 @@
 import argparse
 import logging
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 from hot_oam_dataset.dataset_builder import DatasetConfig, build_all_projects
-from hot_oam_dataset.hf_publisher import generate_parquet, push_raw_to_hub, push_to_hub
+from hot_oam_dataset.hf_publisher import (
+    compress_projects,
+    generate_parquet,
+    push_raw_to_hub,
+    push_to_hub,
+)
 from hot_oam_dataset.tm_client import discover_oam_building_projects
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    hf_repo_id_from_env = os.getenv("HF_DATASET_REPO_ID", "")
+    feature_type_from_env = os.getenv("HOT_OAM_FEATURE_TYPE", "building")
+    burn_binary_masks_env = os.getenv("HOT_OAM_BURN_BINARY_MASKS", "true").strip().lower()
+    burn_binary_masks_default = burn_binary_masks_env in {"1", "true", "yes", "on"}
+
     parser = argparse.ArgumentParser(
         description=(
             "Build semantic segmentation datasets for building disaster mapping "
@@ -53,22 +64,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--push-to-hub",
         type=str,
+        nargs="?",
+        const=hf_repo_id_from_env,
         default=None,
         metavar="REPO_ID",
-        help="Push dataset to HuggingFace Hub (e.g. hotosm/building-segmentation)",
+        help=(
+            "Push dataset to HuggingFace Hub (e.g. hotosm/building-segmentation). "
+            "If omitted, uses HF_DATASET_REPO_ID environment variable"
+        ),
     )
     parser.add_argument(
         "--push-raw",
         type=str,
+        nargs="?",
+        const=hf_repo_id_from_env,
         default=None,
         metavar="REPO_ID",
-        help="Upload raw chips/labels/metadata to HuggingFace Hub under raw/",
+        help=(
+            "Upload raw chips/labels/metadata to HuggingFace Hub under raw/. "
+            "If omitted, uses HF_DATASET_REPO_ID environment variable"
+        ),
+    )
+    parser.add_argument(
+        "--compress-raw",
+        action="store_true",
+        help=(
+            "Compress chips/masks/labels into data.tar.gz per project before uploading. "
+            "Can be used standalone or combined with --push-raw"
+        ),
     )
     parser.add_argument(
         "--dataset-version",
         type=str,
         default="1.0.0",
         help="Dataset version string embedded in stats and Parquet metadata (default: 1.0.0)",
+    )
+    parser.add_argument(
+        "--feature-type",
+        type=str,
+        default=feature_type_from_env,
+        help=(
+            "OSM feature type to fetch (default: HOT_OAM_FEATURE_TYPE env or building). "
+            "Examples: building, highway"
+        ),
+    )
+    parser.add_argument(
+        "--burn-binary-masks",
+        action=argparse.BooleanOptionalAction,
+        default=burn_binary_masks_default,
+        help=(
+            "Generate binary raster masks from OSM labels for each project "
+            "(default: enabled; can be controlled by HOT_OAM_BURN_BINARY_MASKS)"
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -98,9 +145,26 @@ def main(argv: list[str] | None = None):
         push_to_hub(output_dir, args.push_to_hub, dataset_version=args.dataset_version)
         return
 
-    if args.push_raw:
-        push_raw_to_hub(output_dir, args.push_raw, dataset_version=args.dataset_version)
+    if args.push_to_hub is not None and not args.push_to_hub:
+        logging.error("REPO_ID missing. Pass --push-to-hub <repo_id> or set HF_DATASET_REPO_ID")
+        sys.exit(2)
+
+    if args.compress_raw and not args.push_raw:
+        compress_projects(output_dir)
         return
+
+    if args.push_raw:
+        push_raw_to_hub(
+            output_dir,
+            args.push_raw,
+            dataset_version=args.dataset_version,
+            compress=args.compress_raw,
+        )
+        return
+
+    if args.push_raw is not None and not args.push_raw:
+        logging.error("REPO_ID missing. Pass --push-raw <repo_id> or set HF_DATASET_REPO_ID")
+        sys.exit(2)
 
     now = datetime.now(tz=UTC)
     created_from = now.replace(year=now.year - args.years_back).strftime("%Y-%m-%d")
@@ -127,7 +191,12 @@ def main(argv: list[str] | None = None):
         logging.info("Discovery complete. Saved to %s", output_dir)
         return
 
-    config = DatasetConfig(output_dir=output_dir, zoom=args.zoom)
+    config = DatasetConfig(
+        output_dir=output_dir,
+        zoom=args.zoom,
+        feature_type=args.feature_type,
+        burn_binary_masks=args.burn_binary_masks,
+    )
     build_all_projects(projects, config, dataset_version=args.dataset_version)
 
 

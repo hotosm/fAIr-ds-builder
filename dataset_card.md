@@ -26,6 +26,8 @@ dataset_info:
   features:
     - name: image
       dtype: image
+    - name: mask
+      dtype: image
     - name: tile_id
       dtype: string
     - name: tile_x
@@ -58,7 +60,7 @@ dataset_info:
       dtype: float64
   splits:
     - name: train
-      num_examples: 0
+      num_examples: 61238
 ---
 
 # HOT Building Segmentation Dataset
@@ -95,11 +97,13 @@ dataset/
     tiles.geojson                  # Tile boundary geometries
     chips/
       OAM-{x}-{y}-{z}.tif         # 256x256 aerial imagery tiles
+    masks/
+      OAM-{x}-{y}-{z}.tif         # Binary raster masks
     labels/
       OAM-{x}-{y}-{z}.geojson     # Per-tile building footprint polygons
       osm-result.geojson           # Full OSM building data for the area
   parquet/
-    data.parquet                   # HuggingFace Parquet with embedded images
+    data.parquet                   # HuggingFace Parquet with embedded images and masks
   projects_summary.json
   projects_map.geojson
 ```
@@ -204,3 +208,14 @@ Built using the [hot-oam-dataset](https://github.com/hotosm/building-tm-ai-datas
 ### Contributions
 
 Powered by data from [OpenStreetMap](https://www.openstreetmap.org/) contributors, [OpenAerialMap](https://openaerialmap.org/), and the [HOT Tasking Manager](https://tasks.hotosm.org/) volunteer community.
+
+<!-- AUTO_STATS_START -->
+## Generated Stats
+- Dataset version: 1.0.0
+- Tile pairs (num_examples): 61,238
+- Total projects: 50
+- Tiles with features: 40,980
+- Tiles without features: 20,258
+- Total polygons: 633,758
+- Generated at: 2026-04-03T11:27:38.120097+00:00
+<!-- AUTO_STATS_END -->

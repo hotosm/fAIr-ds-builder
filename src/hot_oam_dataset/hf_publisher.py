@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import tarfile
 from pathlib import Path
 
 from datasets import Dataset, Features, Image, Value
@@ -10,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 TILE_ID_PATTERN = re.compile(r"^OAM-(\d+)-(\d+)-(\d+)$")
 TILE_TITLE_PATTERN = re.compile(r"Tile\(x=(\d+), y=(\d+), z=(\d+)\)")
+CARD_AUTO_STATS_START = "<!-- AUTO_STATS_START -->"
+CARD_AUTO_STATS_END = "<!-- AUTO_STATS_END -->"
 
 
 def generate_parquet(
@@ -33,6 +36,7 @@ def generate_parquet(
         imagery_url = metadata.get("imagery_url", "")
 
         chips_dir = project_dir / "chips"
+        masks_dir = project_dir / "masks"
         labels_dir = project_dir / "labels"
         tiles_geojson_path = project_dir / "tiles.geojson"
 
@@ -41,6 +45,7 @@ def generate_parquet(
         for chip_path in sorted(chips_dir.glob("OAM-*.tif")):
             tile_id = chip_path.stem
             label_path = labels_dir / f"{tile_id}.geojson"
+            mask_path = masks_dir / f"{tile_id}.tif"
 
             if not label_path.exists():
                 continue
@@ -64,6 +69,7 @@ def generate_parquet(
             records.append(
                 {
                     "image": str(chip_path),
+                    "mask": str(mask_path) if mask_path.exists() else None,
                     "tile_id": tile_id,
                     "tile_x": tile_x,
                     "tile_y": tile_y,
@@ -91,6 +97,7 @@ def generate_parquet(
     features = Features(
         {
             "image": Image(),
+            "mask": Image(),
             "tile_id": Value("string"),
             "tile_x": Value("int32"),
             "tile_y": Value("int32"),
@@ -115,6 +122,8 @@ def generate_parquet(
     dataset.info.version = dataset_version
     dataset.to_parquet(str(output_dir / "data.parquet"))
 
+    _update_dataset_card(dataset_dir, num_examples=len(records), dataset_version=dataset_version)
+
     logger.info("Parquet saved to %s (version %s)", output_dir, dataset_version)
 
 
@@ -134,8 +143,10 @@ def push_to_hub(
     logger.info("Loading Parquet dataset from %s", parquet_path)
     dataset = Dataset.from_parquet(str(parquet_path))
 
+    _update_dataset_card(dataset_dir, num_examples=len(dataset), dataset_version=dataset_version)
+
     logger.info("Pushing to HuggingFace Hub: %s", repo_id)
-    dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=f"v{dataset_version}")
+    _push_dataset_with_card_retry(dataset=dataset, repo_id=repo_id, dataset_version=dataset_version)
 
     dataset_card_path = Path("dataset_card.md")
     if dataset_card_path.exists():
@@ -146,20 +157,94 @@ def push_to_hub(
     logger.info("Dataset published to https://huggingface.co/datasets/%s", repo_id)
 
 
-def push_raw_to_hub(dataset_dir: Path, repo_id: str, dataset_version: str = "1.0.0"):
+def compress_projects(dataset_dir: Path) -> list[Path]:
+    """Create a data.tar.gz per project containing chips/, masks/, and labels/."""
+    archive_dirs = ["chips", "masks", "labels"]
+    created = []
+
+    for project_dir in sorted(dataset_dir.glob("project_*")):
+        if not project_dir.is_dir():
+            continue
+
+        archive_path = project_dir / "data.tar.gz"
+        dirs_to_archive = [d for d in archive_dirs if (project_dir / d).is_dir()]
+
+        if not dirs_to_archive:
+            logger.debug("Skipping %s (no chip/mask/label dirs)", project_dir.name)
+            continue
+
+        if archive_path.exists():
+            logger.debug("Archive already exists: %s", archive_path)
+            created.append(archive_path)
+            continue
+
+        logger.info("Compressing %s (%s)", project_dir.name, ", ".join(dirs_to_archive))
+        with tarfile.open(archive_path, "w:gz") as tar:
+            for dirname in dirs_to_archive:
+                tar.add(project_dir / dirname, arcname=dirname)
+
+        created.append(archive_path)
+
+    logger.info("Compressed %d projects", len(created))
+    return created
+
+
+def push_raw_to_hub(
+    dataset_dir: Path,
+    repo_id: str,
+    dataset_version: str = "1.0.0",
+    compress: bool = False,
+):
+    if compress:
+        compress_projects(dataset_dir)
+
     api = HfApi()
     api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
-    api.create_branch(repo_id=repo_id, repo_type="dataset", branch="raw", exist_ok=True)
 
-    logger.info("Uploading raw dataset folder to %s@raw (large folder mode)", repo_id)
-    api.upload_large_folder(
+    ignore = ["parquet/*", ".cache/*"]
+    if compress:
+        ignore.extend(["*/chips/*", "*/masks/*", "*/labels/*"])
+
+    logger.info("Uploading raw dataset folder to %s (raw/ on main)", repo_id)
+    api.upload_folder(
         folder_path=str(dataset_dir),
+        path_in_repo="raw",
         repo_id=repo_id,
         repo_type="dataset",
-        revision="raw",
-        ignore_patterns=["parquet/*", ".cache/*"],
+        ignore_patterns=ignore,
+        commit_message=f"Upload raw dataset v{dataset_version}",
     )
-    logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/raw", repo_id)
+    logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/main/raw", repo_id)
+
+
+def _push_dataset_with_card_retry(dataset: Dataset, repo_id: str, dataset_version: str) -> None:
+    commit_message = f"v{dataset_version}"
+
+    try:
+        dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=commit_message)
+        return
+    except TypeError as exc:
+        if "unsupported operand type(s) for -=" not in str(exc):
+            raise
+
+        logger.warning(
+            "Detected dataset card metadata bug during push (%s). "
+            "Resetting remote README and retrying push.",
+            exc,
+        )
+
+    api = HfApi()
+    try:
+        api.delete_file(
+            path_in_repo="README.md",
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message="Reset README to recover from metadata merge bug",
+        )
+    except Exception as delete_exc:
+        logger.warning("Could not delete remote README before retry: %s", delete_exc)
+
+    dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=commit_message)
 
 
 def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
@@ -192,3 +277,78 @@ def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
             }
 
     return bounds
+
+
+def _update_dataset_card(dataset_dir: Path, num_examples: int, dataset_version: str) -> None:
+    dataset_card_path = Path("dataset_card.md")
+    if not dataset_card_path.exists():
+        return
+
+    card_text = dataset_card_path.read_text()
+
+    card_text = _update_front_matter_num_examples(card_text, num_examples)
+    card_text = _upsert_generated_stats_block(card_text, dataset_dir, num_examples, dataset_version)
+
+    dataset_card_path.write_text(card_text)
+    logger.info("Updated dataset card dynamic stats (%d examples)", num_examples)
+
+
+def _update_front_matter_num_examples(card_text: str, num_examples: int) -> str:
+    front_matter_match = re.match(r"^(---\n.*?\n---\n)", card_text, flags=re.DOTALL)
+    if not front_matter_match:
+        return card_text
+
+    front_matter = front_matter_match.group(1)
+    updated_front_matter = re.sub(
+        r"(num_examples:\s*)\d+",
+        rf"\g<1>{num_examples}",
+        front_matter,
+        count=1,
+    )
+    return updated_front_matter + card_text[len(front_matter) :]
+
+
+def _upsert_generated_stats_block(
+    card_text: str,
+    dataset_dir: Path,
+    num_examples: int,
+    dataset_version: str,
+) -> str:
+    stats = _load_dataset_stats(dataset_dir)
+
+    lines = [
+        CARD_AUTO_STATS_START,
+        "## Generated Stats",
+        f"- Dataset version: {dataset_version}",
+        f"- Tile pairs (num_examples): {num_examples:,}",
+    ]
+
+    if stats:
+        lines.extend(
+            [
+                f"- Total projects: {stats.get('total_projects', 0):,}",
+                f"- Tiles with features: {stats.get('tiles_with_buildings', 0):,}",
+                f"- Tiles without features: {stats.get('tiles_without_buildings', 0):,}",
+                f"- Total polygons: {stats.get('total_building_polygons', 0):,}",
+                f"- Generated at: {stats.get('generated_at', '')}",
+            ]
+        )
+
+    lines.append(CARD_AUTO_STATS_END)
+    block = "\n" + "\n".join(lines) + "\n"
+
+    if CARD_AUTO_STATS_START in card_text and CARD_AUTO_STATS_END in card_text:
+        pattern = re.compile(
+            rf"{re.escape(CARD_AUTO_STATS_START)}.*?{re.escape(CARD_AUTO_STATS_END)}",
+            flags=re.DOTALL,
+        )
+        return pattern.sub("\n".join(lines), card_text, count=1)
+
+    return card_text.rstrip() + "\n" + block
+
+
+def _load_dataset_stats(dataset_dir: Path) -> dict | None:
+    stats_path = dataset_dir / "dataset_stats.json"
+    if not stats_path.exists():
+        return None
+    return json.loads(stats_path.read_text())

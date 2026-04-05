@@ -21,19 +21,48 @@ uv run hot-oam-dataset --discover-only --verbose
 ### Build dataset (default - 5 projects)
 
 ```bash
-uv run hot-oam-dataset --output-dir dataset --verbose
+uv run hot-oam-dataset --output-dir dataset
+```
+
+By default this also generates binary masks in `project_{id}/masks/`.
+
+### Build dataset with binary raster masks
+
+```bash
+uv run hot-oam-dataset --output-dir dataset --burn-binary-masks
+```
+
+This writes per-chip masks to `project_{id}/masks/` with `0` for background and `255` for buildings.
+
+To disable mask generation:
+
+```bash
+uv run hot-oam-dataset --output-dir dataset --no-burn-binary-masks
+```
+
+### Configure label feature type (building, highway, etc.)
+
+```bash
+export HOT_OAM_FEATURE_TYPE=building
+uv run hot-oam-dataset --output-dir dataset
+```
+
+Or pass it directly:
+
+```bash
+uv run hot-oam-dataset --output-dir dataset --feature-type highway
 ```
 
 ### Build full dataset (all projects)
 
 ```bash
-uv run hot-oam-dataset --limit 0 --output-dir dataset --verbose
+uv run hot-oam-dataset --limit 0 --output-dir dataset
 ```
 
 ### Custom limit and time range
 
 ```bash
-uv run hot-oam-dataset --limit 20 --years-back 3 --output-dir dataset --verbose
+uv run hot-oam-dataset --limit 20 --years-back 3 --output-dir dataset
 ```
 
 Run `uv run hot-oam-dataset --help` for all CLI options.
@@ -53,6 +82,8 @@ dataset/
     tiles.geojson                  # Tile boundary geometries
     chips/
       OAM-{x}-{y}-{z}.tif         # 256x256 aerial imagery tiles
+    masks/
+      OAM-{x}-{y}-{z}.tif         # Binary masks (0 background, 255 feature)
     labels/
       OAM-{x}-{y}-{z}.geojson     # Per-tile building footprint polygons
       osm-result.geojson           # Full OSM building data for the area
@@ -94,6 +125,12 @@ Generated after every build, contains aggregate metadata for the entire dataset:
 
 ## Publishing to Hugging Face
 
+Set repo once for both push commands:
+
+```bash
+export HF_DATASET_REPO_ID=hotosm/building-segmentation
+```
+
 ### Login
 
 ```bash
@@ -112,12 +149,18 @@ export HF_TOKEN=hf_your_token_here
 uv run hot-oam-dataset --generate-parquet --output-dir dataset
 ```
 
-This generates a `parquet/data.parquet` file with embedded images, labels, tile coordinates, and project metadata. HuggingFace uses this for the dataset viewer/preview.
+This generates a `parquet/data.parquet` file with embedded images and masks, labels, tile coordinates, and project metadata. HuggingFace uses this for the dataset viewer/preview.
 
 ### Push to HuggingFace Hub
 
 ```bash
 uv run hot-oam-dataset --push-to-hub hotosm/building-segmentation --output-dir dataset
+```
+
+With env repo id:
+
+```bash
+uv run hot-oam-dataset --push-to-hub --output-dir dataset
 ```
 
 This will:
@@ -134,6 +177,12 @@ Upload the full raw dataset (chips, labels, metadata) under `raw/` in the same r
 uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir dataset
 ```
 
+With env repo id:
+
+```bash
+uv run hot-oam-dataset --push-raw --output-dir dataset
+```
+
 Useful for GIS users who need georeferenced GeoTIFFs or raw GeoJSON labels. The Parquet push is sufficient for ML use.
 
 ### Updating the dataset
@@ -141,10 +190,15 @@ Useful for GIS users who need georeferenced GeoTIFFs or raw GeoJSON labels. The 
 Run the build again, then re-push:
 
 ```bash
-uv run hot-oam-dataset --limit 0 --output-dir dataset --verbose
+uv run hot-oam-dataset --limit 0 --output-dir dataset
 uv run hot-oam-dataset --push-to-hub hotosm/building-segmentation --output-dir dataset
 uv run hot-oam-dataset --push-raw hotosm/building-segmentation --output-dir dataset
 ```
+
+## Quick visualization
+
+- Open `projects_map.geojson` in QGIS.
+- Each project feature includes imagery/TMS URL in properties (`imagery_url`) so you can quickly visualize vector project footprints with source raster links.
 
 ## Just Recipes
 

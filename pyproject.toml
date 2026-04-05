@@ -1,6 +1,6 @@
 [project]
 name = "hot-oam-dataset"
-version = "0.1.0"
+version = "0.2.0"
 description = "Semantic segmentation dataset builder for building disaster mapping using HOT Tasking Manager and OpenAerialMap imagery"
 readme = "README.md"
 authors = [{ name = "kshitijrajsharma", email = "krschap@proton.me" }]

@@ -13,6 +13,7 @@ from hot_oam_dataset.hf_publisher import (
     push_raw_to_hub,
     push_to_hub,
 )
+from hot_oam_dataset.split_generator import generate_splits
 from hot_oam_dataset.tm_client import discover_oam_building_projects
 
 
@@ -61,6 +62,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--generate-parquet",
         action="store_true",
         help="Generate HuggingFace-compatible Parquet from existing dataset",
+    )
+    parser.add_argument(
+        "--generate-splits",
+        action="store_true",
+        help=(
+            "Generate train/validation/test split assignments based on project clusters. "
+            "Projects sharing the same imagery URL are kept in the same split to prevent "
+            "spatial leakage. Writes splits.json to the output directory"
+        ),
     )
     parser.add_argument(
         "--push-to-hub",
@@ -137,6 +147,10 @@ def main(argv: list[str] | None = None):
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.generate_splits:
+        generate_splits(output_dir)
+        return
 
     if args.generate_parquet:
         generate_parquet(output_dir, dataset_version=args.dataset_version)

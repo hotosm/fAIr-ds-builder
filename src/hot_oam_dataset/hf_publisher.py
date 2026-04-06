@@ -4,8 +4,10 @@ import re
 import tarfile
 from pathlib import Path
 
-from datasets import Dataset, Features, Image, Value
+from datasets import Dataset, DatasetDict, Features, Image, Value
 from huggingface_hub import DatasetCard, HfApi
+
+from hot_oam_dataset.split_generator import SPLIT_NAMES, compute_split_stats, load_splits
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +17,7 @@ CARD_AUTO_STATS_START = "<!-- AUTO_STATS_START -->"
 CARD_AUTO_STATS_END = "<!-- AUTO_STATS_END -->"
 
 
-def generate_parquet(
-    dataset_dir: Path, output_dir: Path | None = None, dataset_version: str = "1.0.0"
-):
-    output_dir = output_dir or dataset_dir / "parquet"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+def _collect_parquet_records(dataset_dir: Path) -> list[dict]:
     records = []
 
     for project_dir in sorted(dataset_dir.glob("project_*")):
@@ -88,13 +85,11 @@ def generate_parquet(
                 }
             )
 
-    if not records:
-        logger.warning("No valid tile pairs found for Parquet generation")
-        return
+    return records
 
-    logger.info("Generating Parquet with %d tile records", len(records))
 
-    features = Features(
+def _parquet_features() -> Features:
+    return Features(
         {
             "image": Image(),
             "mask": Image(),
@@ -116,15 +111,95 @@ def generate_parquet(
         }
     )
 
-    column_data = {key: [r[key] for r in records] for key in records[0]}
 
-    dataset = Dataset.from_dict(column_data, features=features)
+def _records_to_dataset(records: list[dict], dataset_version: str) -> Dataset:
+    column_data = {key: [r[key] for r in records] for key in records[0]}
+    dataset = Dataset.from_dict(column_data, features=_parquet_features())
     dataset.info.version = dataset_version
-    dataset.to_parquet(str(output_dir / "data.parquet"))
+    return dataset
+
+
+def generate_parquet(
+    dataset_dir: Path, output_dir: Path | None = None, dataset_version: str = "1.0.0"
+):
+    output_dir = output_dir or dataset_dir / "parquet"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    records = _collect_parquet_records(dataset_dir)
+
+    if not records:
+        logger.warning("No valid tile pairs found for Parquet generation")
+        return
+
+    splits = load_splits(dataset_dir)
+
+    if splits:
+        _generate_split_parquets(records, splits, output_dir, dataset_version)
+    else:
+        logger.info("No splits.json found, generating single Parquet")
+        dataset = _records_to_dataset(records, dataset_version)
+        dataset.to_parquet(str(output_dir / "data.parquet"))
 
     _update_dataset_card(dataset_dir, num_examples=len(records), dataset_version=dataset_version)
 
     logger.info("Parquet saved to %s (version %s)", output_dir, dataset_version)
+
+
+def _generate_split_parquets(
+    records: list[dict],
+    splits: dict[int, str],
+    output_dir: Path,
+    dataset_version: str,
+):
+    split_records: dict[str, list[dict]] = {name: [] for name in SPLIT_NAMES}
+    unassigned = 0
+
+    for record in records:
+        split_name = splits.get(record["project_id"])
+        if split_name and split_name in split_records:
+            split_records[split_name].append(record)
+        else:
+            unassigned += 1
+
+    if unassigned:
+        logger.warning("%d tiles had no split assignment, excluded from output", unassigned)
+
+    for split_name in SPLIT_NAMES:
+        split_recs = split_records[split_name]
+        if not split_recs:
+            logger.warning("Split '%s' has no records", split_name)
+            continue
+
+        dataset = _records_to_dataset(split_recs, dataset_version)
+        parquet_path = output_dir / f"{split_name}.parquet"
+        dataset.to_parquet(str(parquet_path))
+        logger.info("  %s: %d records -> %s", split_name, len(split_recs), parquet_path)
+
+
+def _load_parquet_as_dataset_or_dict(
+    parquet_dir: Path,
+) -> Dataset | DatasetDict:
+    split_parquets = {name: parquet_dir / f"{name}.parquet" for name in SPLIT_NAMES}
+    available_splits = {name: path for name, path in split_parquets.items() if path.exists()}
+
+    if available_splits:
+        logger.info("Loading split Parquets: %s", list(available_splits.keys()))
+        return DatasetDict(
+            {name: Dataset.from_parquet(str(path)) for name, path in available_splits.items()}
+        )
+
+    single_path = parquet_dir / "data.parquet"
+    if single_path.exists():
+        return Dataset.from_parquet(str(single_path))
+
+    msg = f"No parquet files found in {parquet_dir}"
+    raise FileNotFoundError(msg)
+
+
+def _count_examples(dataset: Dataset | DatasetDict) -> int:
+    if isinstance(dataset, DatasetDict):
+        return sum(len(ds) for ds in dataset.values())
+    return len(dataset)
 
 
 def push_to_hub(
@@ -134,16 +209,16 @@ def push_to_hub(
     dataset_version: str = "1.0.0",
 ):
     parquet_dir = parquet_dir or dataset_dir / "parquet"
-    parquet_path = parquet_dir / "data.parquet"
 
-    if not parquet_path.exists():
+    has_any_parquet = any(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else False
+    if not has_any_parquet:
         logger.info("Parquet not found, generating first")
         generate_parquet(dataset_dir, parquet_dir, dataset_version=dataset_version)
 
-    logger.info("Loading Parquet dataset from %s", parquet_path)
-    dataset = Dataset.from_parquet(str(parquet_path))
+    dataset = _load_parquet_as_dataset_or_dict(parquet_dir)
+    num_examples = _count_examples(dataset)
 
-    _update_dataset_card(dataset_dir, num_examples=len(dataset), dataset_version=dataset_version)
+    _update_dataset_card(dataset_dir, num_examples=num_examples, dataset_version=dataset_version)
 
     logger.info("Pushing to HuggingFace Hub: %s", repo_id)
     _push_dataset_with_card_retry(dataset=dataset, repo_id=repo_id, dataset_version=dataset_version)
@@ -241,11 +316,17 @@ def _tag_hf_revision(repo_id: str, dataset_version: str) -> None:
         logger.warning("Could not create HF tag %s: %s", tag, exc)
 
 
-def _push_dataset_with_card_retry(dataset: Dataset, repo_id: str, dataset_version: str) -> None:
+def _push_dataset_with_card_retry(
+    dataset: Dataset | DatasetDict, repo_id: str, dataset_version: str
+) -> None:
     commit_message = f"v{dataset_version}"
 
     try:
-        dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=commit_message)
+        dataset.push_to_hub(
+            repo_id,
+            max_shard_size="500MB",
+            commit_message=commit_message,
+        )
         return
     except TypeError as exc:
         known_metadata_bugs = [
@@ -272,7 +353,11 @@ def _push_dataset_with_card_retry(dataset: Dataset, repo_id: str, dataset_versio
     except Exception as delete_exc:
         logger.warning("Could not delete remote README before retry: %s", delete_exc)
 
-    dataset.push_to_hub(repo_id, max_shard_size="500MB", commit_message=commit_message)
+    dataset.push_to_hub(
+        repo_id,
+        max_shard_size="500MB",
+        commit_message=commit_message,
+    )
 
 
 def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
@@ -365,6 +450,21 @@ def _upsert_generated_stats_block(
                     f"| {info['tiles']:,} | {info['polygons']:,} "
                     f"| {info['area_sq_km']:,.1f} |"
                 )
+
+    split_stats = compute_split_stats(dataset_dir)
+    if split_stats:
+        lines.append("")
+        lines.append("### Data Splits")
+        lines.append("")
+        lines.append("| Split | Projects | Tiles | Buildings | Countries | % of Tiles |")
+        lines.append("|-------|----------|-------|-----------|-----------|------------|")
+        for split_name in SPLIT_NAMES:
+            info = split_stats[split_name]
+            lines.append(
+                f"| {split_name} | {info['projects']} "
+                f"| {info['tiles']:,} | {info['buildings']:,} "
+                f"| {len(info['countries'])} | {info['percent']:.1f}% |"
+            )
 
     lines.append(CARD_AUTO_STATS_END)
     block = "\n" + "\n".join(lines) + "\n"

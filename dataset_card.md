@@ -58,6 +58,13 @@ dataset_info:
       dtype: float64
     - name: bbox_north
       dtype: float64
+  splits:
+    - name: train
+      num_examples: 57890
+    - name: validation
+      num_examples: 7237
+    - name: test
+      num_examples: 7236
 ---
 
 # HOT Building Segmentation Dataset
@@ -130,7 +137,15 @@ dataset/
 
 ### Data Splits
 
-The dataset is provided unsplit. Users should create their own train/validation/test splits based on their requirements. Recommended approach: split by project to avoid spatial autocorrelation between splits.
+The dataset is split into train, validation, and test sets at the **project level** to prevent spatial leakage. Projects sharing the same imagery URL (i.e. covering the same physical area) are grouped into clusters and always assigned to the same split together.
+
+Split assignment uses greedy bin-packing (80/10/10 by tile count) over clusters sorted by size descending. The mapping is stored in `splits.json` for reproducibility.
+
+| Split | Target % |
+|-------|----------|
+| train | 80% |
+| validation | 10% |
+| test | 10% |
 
 ## Dataset Creation
 
@@ -250,4 +265,12 @@ Powered by data from [OpenStreetMap](https://www.openstreetmap.org/) contributor
 | Trinidad and Tobago | 1 | 134 | 1,077 | 1.8 |
 | Argentina | 1 | 71 | 391 | 0.5 |
 | Nigeria | 1 | 8 | 113 | 0.3 |
+
+### Data Splits
+
+| Split | Projects | Tiles | Buildings | Countries | % of Tiles |
+|-------|----------|-------|-----------|-----------|------------|
+| train | 81 | 57,890 | 639,284 | 20 | 80.0% |
+| validation | 6 | 7,237 | 36,480 | 3 | 10.0% |
+| test | 6 | 7,236 | 40,011 | 6 | 10.0% |
 <!-- AUTO_STATS_END -->

@@ -1,6 +1,9 @@
+import logging
+
 from hot_oam_dataset.tm_client import (
     TaskingManagerClient,
     discover_oam_building_projects,
+    fetch_projects_by_ids,
 )
 
 
@@ -86,6 +89,62 @@ def test_is_validated_building_project_below_threshold():
 def test_is_validated_building_project_wrong_type():
     client = TaskingManagerClient.__new__(TaskingManagerClient)
     assert not client.is_validated_building_project(_summary(100, ["ROADS"]))
+
+
+def _make_hand_picked_client(mocker, details_by_id: dict[int, dict]):
+    real_client = TaskingManagerClient.__new__(TaskingManagerClient)
+    mock_instance = mocker.MagicMock()
+    mock_instance.fetch_project_full.side_effect = lambda pid: details_by_id[pid]
+    mock_instance.is_validated_building_project.side_effect = (
+        real_client.is_validated_building_project
+    )
+    mock_instance.is_oam_project.side_effect = real_client.is_oam_project
+    mock_instance.build_project_record.side_effect = real_client.build_project_record
+    ctx = mocker.MagicMock(
+        __enter__=lambda s: mock_instance,
+        __exit__=mocker.MagicMock(return_value=False),
+    )
+    mocker.patch("hot_oam_dataset.tm_client.TaskingManagerClient", return_value=ctx)
+    return mock_instance
+
+
+def test_fetch_projects_by_ids_returns_records_for_requested_ids(mocker):
+    oam_url = "https://tiles.openaerialmap.org/abc/{z}/{x}/{y}"
+    details = {
+        25317: _detail(oam_url, 25317),
+        25320: _detail(oam_url, 25320),
+    }
+    mock = _make_hand_picked_client(mocker, details)
+
+    projects = fetch_projects_by_ids([25317, 25320])
+
+    assert [p.project_id for p in projects] == [25317, 25320]
+    assert mock.fetch_project_full.call_count == 2
+
+
+def test_fetch_projects_by_ids_warns_but_builds_when_below_validation_threshold(mocker, caplog):
+    oam_url = "https://tiles.openaerialmap.org/abc/{z}/{x}/{y}"
+    detail = _detail(oam_url, 25317)
+    detail["percentValidated"] = 40
+    _make_hand_picked_client(mocker, {25317: detail})
+
+    with caplog.at_level(logging.WARNING, logger="hot_oam_dataset.tm_client"):
+        projects = fetch_projects_by_ids([25317])
+
+    assert len(projects) == 1
+    assert projects[0].percent_validated == 40
+    assert any("below 95% validation" in rec.message for rec in caplog.records)
+
+
+def test_fetch_projects_by_ids_warns_but_builds_for_non_oam_imagery(mocker, caplog):
+    detail = _detail("https://example.com/tiles/{z}/{x}/{y}", 25317)
+    _make_hand_picked_client(mocker, {25317: detail})
+
+    with caplog.at_level(logging.WARNING, logger="hot_oam_dataset.tm_client"):
+        projects = fetch_projects_by_ids([25317])
+
+    assert len(projects) == 1
+    assert any("does not use OAM imagery" in rec.message for rec in caplog.records)
 
 
 def test_discover_limit_stops_api_calls(mocker):

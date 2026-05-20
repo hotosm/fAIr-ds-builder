@@ -26,12 +26,21 @@ build *args:
     uv run hot-oam-dataset --output-dir {{ default_output }} {{ args }}
     uv run hot-oam-dataset --compress-raw --output-dir {{ default_output }}
 
-# Compress raw chips/masks/labels into per-project tar.gz archives
-compress-raw:
-    uv run hot-oam-dataset --compress-raw --output-dir {{ default_output }}
+# Build a hand-picked set of TM projects into a named folder (e.g. just build-projects "25317,25320" freetown-building-dataset)
+build-projects ids output_dir *args:
+    uv run hot-oam-dataset --project-ids {{ ids }} --output-dir {{ output_dir }} {{ args }}
+    uv run hot-oam-dataset --compress-raw --output-dir {{ output_dir }}
 
-# Publish to HuggingFace Hub. Add "raw" to also upload raw files (e.g. just publish REPO raw)
-publish repo_id raw="":
-    uv run hot-oam-dataset --generate-parquet --output-dir {{ default_output }}
-    uv run hot-oam-dataset --push-to-hub {{ repo_id }} --output-dir {{ default_output }}
-    {{ if raw =~ "raw" { "uv run hot-oam-dataset --push-raw " + repo_id + " --compress-raw --output-dir " + default_output } else { "@echo 'Done (skipped raw upload)'" } }}
+# Compress raw chips/masks/labels into per-project tar.gz archives
+compress-raw output_dir=default_output:
+    uv run hot-oam-dataset --compress-raw --output-dir {{ output_dir }}
+
+# Publish to HuggingFace Hub. Add "raw" as a third arg to also upload raw files (e.g. just publish REPO dataset raw)
+publish repo_id output_dir=default_output raw="":
+    uv run hot-oam-dataset --generate-parquet --output-dir {{ output_dir }}
+    uv run hot-oam-dataset --push-to-hub {{ repo_id }} --output-dir {{ output_dir }}
+    {{ if raw =~ "raw" { "uv run hot-oam-dataset --push-raw " + repo_id + " --compress-raw --output-dir " + output_dir } else { "@echo 'Done (skipped raw upload)'" } }}
+
+# Publish a named hand-picked dataset folder. Add "raw" as a third arg to also upload raw files.
+publish-projects output_dir repo_id raw="":
+    just publish {{ repo_id }} {{ output_dir }} {{ raw }}

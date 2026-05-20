@@ -14,7 +14,20 @@ from hot_oam_dataset.hf_publisher import (
     push_to_hub,
 )
 from hot_oam_dataset.split_generator import generate_splits
-from hot_oam_dataset.tm_client import discover_oam_building_projects
+from hot_oam_dataset.tm_client import (
+    discover_oam_building_projects,
+    fetch_projects_by_ids,
+)
+
+
+def _comma_separated_ints(value: str) -> list[int]:
+    tokens = [token.strip() for token in value.split(",") if token.strip()]
+    if not tokens:
+        raise argparse.ArgumentTypeError("must contain at least one project id")
+    try:
+        return [int(token) for token in tokens]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"must be comma-separated integers ({exc})") from exc
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -52,6 +65,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=5,
         help="Max projects to discover and download (default: 5, use 0 for all)",
+    )
+    parser.add_argument(
+        "--project-ids",
+        type=_comma_separated_ints,
+        default=None,
+        metavar="IDS",
+        help=(
+            "Comma-separated TM project IDs to build (e.g. 25317,25320). "
+            "Bypasses discovery: --years-back and --limit are ignored. "
+            "Validation and OAM-imagery checks are downgraded to warnings"
+        ),
     )
     parser.add_argument(
         "--discover-only",
@@ -181,23 +205,30 @@ def main(argv: list[str] | None = None):
         logging.error("REPO_ID missing. Pass --push-raw <repo_id> or set HF_DATASET_REPO_ID")
         sys.exit(2)
 
-    now = datetime.now(tz=UTC)
-    created_from = now.replace(year=now.year - args.years_back).strftime("%Y-%m-%d")
-    created_to = now.strftime("%Y-%m-%d")
+    if args.project_ids:
+        logging.info(
+            "Building hand-picked projects %s (ignoring --years-back and --limit)",
+            args.project_ids,
+        )
+        projects = fetch_projects_by_ids(args.project_ids, output_path=output_dir)
+    else:
+        now = datetime.now(tz=UTC)
+        created_from = now.replace(year=now.year - args.years_back).strftime("%Y-%m-%d")
+        created_to = now.strftime("%Y-%m-%d")
 
-    logging.info("Searching TM projects from %s to %s", created_from, created_to)
+        logging.info("Searching TM projects from %s to %s", created_from, created_to)
 
-    effective_limit = args.limit or None
+        effective_limit = args.limit or None
 
-    projects = discover_oam_building_projects(
-        created_from=created_from,
-        created_to=created_to,
-        output_path=output_dir,
-        limit=effective_limit,
-    )
+        projects = discover_oam_building_projects(
+            created_from=created_from,
+            created_to=created_to,
+            output_path=output_dir,
+            limit=effective_limit,
+        )
 
     if not projects:
-        logging.warning("No validated OAM building projects found")
+        logging.warning("No projects to build")
         sys.exit(0)
 
     _print_projects_table(projects)

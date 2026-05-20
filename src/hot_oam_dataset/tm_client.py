@@ -125,6 +125,55 @@ class TaskingManagerClient:
         )
 
 
+def fetch_projects_by_ids(
+    project_ids: list[int],
+    output_path: Path | None = None,
+) -> list[TaskingManagerProject]:
+    """Fetch a hand-picked set of TM projects by ID.
+
+    Skips the discovery search and validation gate. Warns when a project falls
+    below the standard validation threshold or does not use OAM imagery, but
+    builds the record anyway so the caller can proceed.
+    """
+    projects: list[TaskingManagerProject] = []
+
+    with TaskingManagerClient() as client:
+        for pid in project_ids:
+            detail = client.fetch_project_full(pid)
+
+            if not client.is_validated_building_project(detail):
+                logger.warning(
+                    "Project %d is below %d%% validation or not a buildings project; "
+                    "proceeding because it was hand-picked",
+                    pid,
+                    MINIMUM_VALIDATION_PERCENT,
+                )
+
+            if not client.is_oam_project(detail):
+                logger.warning(
+                    "Project %d does not use OAM imagery; proceeding because it was "
+                    "hand-picked (imagery URL: %s)",
+                    pid,
+                    detail.get("imagery", ""),
+                )
+
+            project = client.build_project_record(detail)
+            projects.append(project)
+            logger.info(
+                "Loaded hand-picked #%d %s (%s)",
+                project.project_id,
+                project.name,
+                project.country,
+            )
+
+        logger.info("Hand-picked projects loaded: %d", len(projects))
+
+        if output_path:
+            save_discovery_outputs(projects, output_path)
+
+        return projects
+
+
 def discover_oam_building_projects(
     created_from: str | None = None,
     created_to: str | None = None,

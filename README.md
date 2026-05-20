@@ -65,6 +65,18 @@ uv run hot-oam-dataset --limit 0 --output-dir dataset
 uv run hot-oam-dataset --limit 20 --years-back 3 --output-dir dataset
 ```
 
+### Build a hand-picked set of projects into a named folder
+
+Skip discovery and build exactly the TM project IDs you want. Useful for region-specific
+datasets you intend to publish under their own HuggingFace repo:
+
+```bash
+uv run hot-oam-dataset --project-ids 25317 --output-dir freetown-building-dataset
+```
+
+Validation and OAM-imagery checks are downgraded to warnings when IDs are hand-picked.
+`--years-back` and `--limit` are ignored when `--project-ids` is set.
+
 Run `uv run hot-oam-dataset --help` for all CLI options.
 
 ## Output Structure
@@ -205,9 +217,12 @@ uv run hot-oam-dataset --push-raw hotosm/vhr-building-segmentation --output-dir 
 Requires [just](https://github.com/casey/just). Run `just` to list all available recipes.
 
 ```bash
-just lint                                         # ruff lint + format + ty + pytest
-just build --limit 0 --years-back 3               # pass any CLI flags through
-just publish hotosm/vhr-building-segmentation raw   # parquet + push to HF Hub (+ raw)
+just lint                                                                # ruff lint + format + ty + pytest
+just build --limit 0 --years-back 3                                      # pass any CLI flags through
+just publish hotosm/vhr-building-segmentation                            # parquet + push to HF Hub
+just publish hotosm/vhr-building-segmentation dataset raw                # also upload raw files
+just build-projects "25317" freetown-building-dataset                    # build a hand-picked set into a named folder
+just publish-projects freetown-building-dataset hotosm/freetown-buildings raw   # publish that folder (+ raw)
 ```
 
 ## Data Sources & Licensing

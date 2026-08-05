@@ -7,6 +7,12 @@ from pathlib import Path
 
 from hot_oam_dataset import __version__
 from hot_oam_dataset.dataset_builder import DatasetConfig, build_all_projects
+from hot_oam_dataset.feature_spec import (
+    DEFAULT_FEATURE_TYPE,
+    GEOMETRY_TYPES,
+    TM_MAPPING_TYPES,
+    resolve_feature_spec,
+)
 from hot_oam_dataset.hf_publisher import (
     compress_projects,
     generate_parquet,
@@ -15,9 +21,11 @@ from hot_oam_dataset.hf_publisher import (
 )
 from hot_oam_dataset.split_generator import generate_splits
 from hot_oam_dataset.tm_client import (
-    discover_oam_building_projects,
+    discover_oam_projects,
     fetch_projects_by_ids,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _comma_separated_ints(value: str) -> list[int]:
@@ -32,14 +40,14 @@ def _comma_separated_ints(value: str) -> list[int]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     hf_repo_id_from_env = os.getenv("HF_DATASET_REPO_ID", "")
-    feature_type_from_env = os.getenv("HOT_OAM_FEATURE_TYPE", "building")
+    feature_type_from_env = os.getenv("HOT_OAM_FEATURE_TYPE", DEFAULT_FEATURE_TYPE)
     burn_binary_masks_env = os.getenv("HOT_OAM_BURN_BINARY_MASKS", "true").strip().lower()
     burn_binary_masks_default = burn_binary_masks_env in {"1", "true", "yes", "on"}
 
     parser = argparse.ArgumentParser(
         description=(
-            "Build semantic segmentation datasets for building disaster mapping "
-            "from HOT Tasking Manager OAM projects"
+            "Build semantic segmentation datasets from HOT Tasking Manager OAM projects, "
+            "labelled with any OpenStreetMap feature type"
         )
     )
     parser.add_argument(
@@ -139,8 +147,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default=feature_type_from_env,
         help=(
-            "OSM feature type to fetch (default: HOT_OAM_FEATURE_TYPE env or building). "
-            "Examples: building, highway"
+            "OSM tag key to label with, e.g. building, highway, waterway, landuse "
+            f"(default: HOT_OAM_FEATURE_TYPE env or {DEFAULT_FEATURE_TYPE}). "
+            "Any OSM key works; unknown keys discover against the OTHER mapping type"
+        ),
+    )
+    parser.add_argument(
+        "--tm-mapping-type",
+        type=str,
+        choices=TM_MAPPING_TYPES,
+        default=None,
+        help=(
+            "Tasking Manager mapping type used for project discovery. "
+            "Defaults to the one implied by --feature-type"
+        ),
+    )
+    parser.add_argument(
+        "--geometry-types",
+        type=str,
+        nargs="+",
+        choices=GEOMETRY_TYPES,
+        default=None,
+        metavar="TYPE",
+        help=(
+            "Geometry filter sent to the OSM Raw Data API. "
+            "Defaults to the one implied by --feature-type (polygon for areas, line for roads)"
+        ),
+    )
+    parser.add_argument(
+        "--label-buffer-meters",
+        type=float,
+        default=0.0,
+        help=(
+            "Widen label geometries by this many metres before burning masks. "
+            "Line features need a buffer to produce usable masks (default: 0)"
         ),
     )
     parser.add_argument(
@@ -160,6 +200,70 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_standalone_command(args, output_dir: Path) -> bool:
+    if args.generate_splits:
+        generate_splits(output_dir)
+        return True
+
+    if args.generate_parquet:
+        generate_parquet(output_dir, dataset_version=args.dataset_version)
+        return True
+
+    if args.push_to_hub is not None:
+        _require_repo_id(args.push_to_hub, "--push-to-hub")
+        push_to_hub(output_dir, args.push_to_hub, dataset_version=args.dataset_version)
+        return True
+
+    if args.push_raw is not None:
+        _require_repo_id(args.push_raw, "--push-raw")
+        push_raw_to_hub(
+            output_dir,
+            args.push_raw,
+            dataset_version=args.dataset_version,
+            compress=args.compress_raw,
+        )
+        return True
+
+    if args.compress_raw:
+        compress_projects(output_dir)
+        return True
+
+    return False
+
+
+def _require_repo_id(repo_id: str, flag: str) -> None:
+    if not repo_id:
+        logger.error("REPO_ID missing. Pass %s <repo_id> or set HF_DATASET_REPO_ID", flag)
+        sys.exit(2)
+
+
+def _collect_projects(args, spec, output_dir: Path) -> list:
+    if args.project_ids:
+        logger.info(
+            "Building hand-picked projects %s (ignoring --years-back and --limit)",
+            args.project_ids,
+        )
+        return fetch_projects_by_ids(
+            args.project_ids,
+            mapping_type=spec.tm_mapping_type,
+            output_path=output_dir,
+        )
+
+    now = datetime.now(tz=UTC)
+    created_from = now.replace(year=now.year - args.years_back).strftime("%Y-%m-%d")
+    created_to = now.strftime("%Y-%m-%d")
+
+    logger.info("Searching TM projects from %s to %s", created_from, created_to)
+
+    return discover_oam_projects(
+        mapping_type=spec.tm_mapping_type,
+        created_from=created_from,
+        created_to=created_to,
+        output_path=output_dir,
+        limit=args.limit or None,
+    )
+
+
 def main(argv: list[str] | None = None):
     args = parse_args(argv)
 
@@ -172,69 +276,27 @@ def main(argv: list[str] | None = None):
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.generate_splits:
-        generate_splits(output_dir)
+    if _run_standalone_command(args, output_dir):
         return
 
-    if args.generate_parquet:
-        generate_parquet(output_dir, dataset_version=args.dataset_version)
-        return
+    spec = resolve_feature_spec(args.feature_type, args.tm_mapping_type, args.geometry_types)
+    logger.info(
+        "Feature type '%s' -> TM mapping type %s, geometry %s",
+        spec.osm_tag,
+        spec.tm_mapping_type,
+        "/".join(spec.geometry_types),
+    )
 
-    if args.push_to_hub:
-        push_to_hub(output_dir, args.push_to_hub, dataset_version=args.dataset_version)
-        return
-
-    if args.push_to_hub is not None and not args.push_to_hub:
-        logging.error("REPO_ID missing. Pass --push-to-hub <repo_id> or set HF_DATASET_REPO_ID")
-        sys.exit(2)
-
-    if args.compress_raw and not args.push_raw:
-        compress_projects(output_dir)
-        return
-
-    if args.push_raw:
-        push_raw_to_hub(
-            output_dir,
-            args.push_raw,
-            dataset_version=args.dataset_version,
-            compress=args.compress_raw,
-        )
-        return
-
-    if args.push_raw is not None and not args.push_raw:
-        logging.error("REPO_ID missing. Pass --push-raw <repo_id> or set HF_DATASET_REPO_ID")
-        sys.exit(2)
-
-    if args.project_ids:
-        logging.info(
-            "Building hand-picked projects %s (ignoring --years-back and --limit)",
-            args.project_ids,
-        )
-        projects = fetch_projects_by_ids(args.project_ids, output_path=output_dir)
-    else:
-        now = datetime.now(tz=UTC)
-        created_from = now.replace(year=now.year - args.years_back).strftime("%Y-%m-%d")
-        created_to = now.strftime("%Y-%m-%d")
-
-        logging.info("Searching TM projects from %s to %s", created_from, created_to)
-
-        effective_limit = args.limit or None
-
-        projects = discover_oam_building_projects(
-            created_from=created_from,
-            created_to=created_to,
-            output_path=output_dir,
-            limit=effective_limit,
-        )
+    projects = _collect_projects(args, spec, output_dir)
 
     if not projects:
-        logging.warning("No projects to build")
+        logger.warning("No projects to build")
         sys.exit(0)
 
     _print_projects_table(projects)
 
     if args.discover_only:
-        logging.info("Discovery complete. Saved to %s", output_dir)
+        logger.info("Discovery complete. Saved to %s", output_dir)
         return
 
     config = DatasetConfig(
@@ -242,8 +304,13 @@ def main(argv: list[str] | None = None):
         zoom=args.zoom,
         feature_type=args.feature_type,
         burn_binary_masks=args.burn_binary_masks,
+        label_buffer_meters=args.label_buffer_meters,
+        tm_mapping_type=args.tm_mapping_type,
+        geometry_types=args.geometry_types,
     )
-    build_all_projects(projects, config, dataset_version=args.dataset_version)
+    failed_project_ids = build_all_projects(projects, config, dataset_version=args.dataset_version)
+    if failed_project_ids:
+        sys.exit(1)
 
 
 def _truncate(text: str, max_length: int) -> str:

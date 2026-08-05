@@ -46,7 +46,9 @@ dataset_info:
       dtype: string
     - name: imagery_url
       dtype: string
-    - name: num_buildings
+    - name: feature_type
+      dtype: string
+    - name: num_features
       dtype: int32
     - name: label_geojson
       dtype: large_string
@@ -104,8 +106,8 @@ dataset/
     masks/
       OAM-{x}-{y}-{z}.tif         # Binary raster masks
     labels/
-      OAM-{x}-{y}-{z}.geojson     # Per-tile building footprint polygons
-      osm-result.geojson           # Full OSM building data for the area
+      OAM-{x}-{y}-{z}.geojson     # Per-tile label geometries
+      osm-result.geojson           # Full OSM label data for the area
   parquet/
     data.parquet                   # HuggingFace Parquet with embedded images and masks
   projects_summary.json
@@ -123,10 +125,15 @@ dataset/
 - Naming: `OAM-{x}-{y}-{z}.tif` following standard web map tile coordinates
 
 **Labels (GeoJSON):**
-- Format: GeoJSON with building footprint polygons
-- Source: OpenStreetMap building data via HOT Raw Data API
+- Format: GeoJSON, geometry follows the feature (polygons for buildings, lines for roads)
+- Source: OpenStreetMap via HOT Raw Data API, filtered on the `feature_type` tag key
 - Coordinate system: EPSG:4326 (WGS84)
 - Each file corresponds to one image tile with matching filename
+
+**Parquet columns:**
+- `feature_type`: OSM tag key used for the labels
+- `num_features`: label features in the tile
+- `label_geojson`: the tile's labels as a GeoJSON string
 
 **Metadata:**
 - `metadata.json`: Project-level information (TM project ID, name, imagery URL, country, validation status)

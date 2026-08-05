@@ -1,10 +1,12 @@
 import json
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+
+from hot_oam_dataset.feature_spec import DEFAULT_FEATURE_TYPE, KNOWN_FEATURE_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +15,7 @@ PROJECTS_ENDPOINT = "/api/v2/projects/"
 OAM_DOMAIN = "openaerialmap.org"
 MINIMUM_VALIDATION_PERCENT = 95
 PROJECT_STATUSES = ("PUBLISHED", "ARCHIVED")
+DEFAULT_MAPPING_TYPE = KNOWN_FEATURE_SPECS[DEFAULT_FEATURE_TYPE].tm_mapping_type
 
 
 @dataclass
@@ -51,20 +54,22 @@ class TaskingManagerClient:
 
     def iter_custom_imagery_project_ids(
         self,
+        mapping_type: str | None = None,
         created_from: str | None = None,
         created_to: str | None = None,
-        mapping_types: str = "BUILDINGS",
     ) -> Generator[int, None, None]:
+        """Yield custom-imagery project ids, across every mapping type when none is given."""
         for status in PROJECT_STATUSES:
             page = 1
             while True:
                 params = {
                     "imagery": "custom",
                     "omitMapResults": "true",
-                    "mappingTypes": mapping_types,
                     "projectStatuses": status,
                     "page": str(page),
                 }
+                if mapping_type:
+                    params["mappingTypes"] = mapping_type
                 if created_from:
                     params["createdFrom"] = created_from
                 if created_to:
@@ -102,10 +107,10 @@ class TaskingManagerClient:
         imagery = project_detail.get("imagery", "") or ""
         return OAM_DOMAIN in imagery
 
-    def is_validated_building_project(self, project_detail: dict) -> bool:
+    def is_validated_project(self, project_detail: dict, mapping_type: str) -> bool:
         percent_validated = project_detail.get("percentValidated", 0)
         mapping_types = project_detail.get("mappingTypes", [])
-        return percent_validated >= MINIMUM_VALIDATION_PERCENT and "BUILDINGS" in mapping_types
+        return percent_validated >= MINIMUM_VALIDATION_PERCENT and mapping_type in mapping_types
 
     def build_project_record(self, detail: dict) -> TaskingManagerProject:
         country_tags = detail.get("countryTag", [])
@@ -127,26 +132,23 @@ class TaskingManagerClient:
 
 def fetch_projects_by_ids(
     project_ids: list[int],
+    mapping_type: str = DEFAULT_MAPPING_TYPE,
     output_path: Path | None = None,
 ) -> list[TaskingManagerProject]:
-    """Fetch a hand-picked set of TM projects by ID.
-
-    Skips the discovery search and validation gate. Warns when a project falls
-    below the standard validation threshold or does not use OAM imagery, but
-    builds the record anyway so the caller can proceed.
-    """
+    """Fetch TM projects by ID, warning rather than skipping on low validation or non-OAM."""
     projects: list[TaskingManagerProject] = []
 
     with TaskingManagerClient() as client:
         for pid in project_ids:
             detail = client.fetch_project_full(pid)
 
-            if not client.is_validated_building_project(detail):
+            if not client.is_validated_project(detail, mapping_type):
                 logger.warning(
-                    "Project %d is below %d%% validation or not a buildings project; "
+                    "Project %d is below %d%% validation or not a %s project; "
                     "proceeding because it was hand-picked",
                     pid,
                     MINIMUM_VALIDATION_PERCENT,
+                    mapping_type,
                 )
 
             if not client.is_oam_project(detail):
@@ -174,7 +176,8 @@ def fetch_projects_by_ids(
         return projects
 
 
-def discover_oam_building_projects(
+def discover_oam_projects(
+    mapping_type: str = DEFAULT_MAPPING_TYPE,
     created_from: str | None = None,
     created_to: str | None = None,
     output_path: Path | None = None,
@@ -182,6 +185,7 @@ def discover_oam_building_projects(
 ) -> list[TaskingManagerProject]:
     with TaskingManagerClient() as client:
         project_id_iter = client.iter_custom_imagery_project_ids(
+            mapping_type=mapping_type,
             created_from=created_from,
             created_to=created_to,
         )
@@ -197,8 +201,8 @@ def discover_oam_building_projects(
                 logger.warning("Failed to fetch summary for project %d: %s", pid, exc)
                 continue
 
-            if not client.is_validated_building_project(summary):
-                logger.debug("Project %d not validated for buildings, skipping", pid)
+            if not client.is_validated_project(summary, mapping_type):
+                logger.debug("Project %d not validated for %s, skipping", pid, mapping_type)
                 continue
 
             try:
@@ -220,7 +224,7 @@ def discover_oam_building_projects(
                 project.country,
             )
 
-        logger.info("Total validated OAM building projects: %d", len(projects))
+        logger.info("Total validated OAM %s projects: %d", mapping_type, len(projects))
 
         if output_path:
             save_discovery_outputs(projects, output_path)
@@ -228,43 +232,73 @@ def discover_oam_building_projects(
         return projects
 
 
+def _summary_record(project: TaskingManagerProject) -> dict:
+    return {
+        "project_id": project.project_id,
+        "name": project.name,
+        "status": project.status,
+        "percent_validated": project.percent_validated,
+        "imagery_url": project.imagery_url,
+        "organisation": project.organisation,
+        "country": project.country,
+        "created": project.created,
+        "mapping_types": project.mapping_types,
+    }
+
+
+def _map_feature(project: TaskingManagerProject) -> dict:
+    return {
+        "type": "Feature",
+        "properties": {
+            "project_id": project.project_id,
+            "name": project.name,
+            "imagery_url": project.imagery_url,
+            "percent_validated": project.percent_validated,
+            "organisation": project.organisation,
+            "country": project.country,
+        },
+        "geometry": project.area_of_interest,
+    }
+
+
+def _merge_by_project_id(
+    existing: list[dict],
+    incoming: list[dict],
+    project_id_of: Callable[[dict], int],
+) -> list[dict]:
+    merged = {project_id_of(record): record for record in existing}
+    for record in incoming:
+        merged[project_id_of(record)] = record
+    return list(merged.values())
+
+
+def _read_existing_summary(path: Path) -> list[dict]:
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def _read_existing_features(path: Path) -> list[dict]:
+    return json.loads(path.read_text()).get("features", []) if path.exists() else []
+
+
 def save_discovery_outputs(projects: list[TaskingManagerProject], output_path: Path):
+    """Write discovery outputs, keeping projects already recorded under output_path."""
     output_path.mkdir(parents=True, exist_ok=True)
 
-    summary = [
-        {
-            "project_id": p.project_id,
-            "name": p.name,
-            "status": p.status,
-            "percent_validated": p.percent_validated,
-            "imagery_url": p.imagery_url,
-            "organisation": p.organisation,
-            "country": p.country,
-            "created": p.created,
-            "mapping_types": p.mapping_types,
-        }
-        for p in projects
-    ]
-    (output_path / "projects_summary.json").write_text(json.dumps(summary, indent=2))
+    summary_path = output_path / "projects_summary.json"
+    map_path = output_path / "projects_map.geojson"
 
-    geojson_collection = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "project_id": p.project_id,
-                    "name": p.name,
-                    "imagery_url": p.imagery_url,
-                    "percent_validated": p.percent_validated,
-                    "organisation": p.organisation,
-                    "country": p.country,
-                },
-                "geometry": p.area_of_interest,
-            }
-            for p in projects
-        ],
-    }
-    (output_path / "projects_map.geojson").write_text(json.dumps(geojson_collection, indent=2))
+    summary = _merge_by_project_id(
+        _read_existing_summary(summary_path),
+        [_summary_record(p) for p in projects],
+        lambda record: record["project_id"],
+    )
+    features = _merge_by_project_id(
+        _read_existing_features(map_path),
+        [_map_feature(p) for p in projects],
+        lambda feature: feature["properties"]["project_id"],
+    )
 
-    logger.info("Saved discovery outputs to %s", output_path)
+    summary_path.write_text(json.dumps(summary, indent=2))
+    map_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}, indent=2))
+
+    logger.info("Saved discovery outputs for %d projects to %s", len(summary), output_path)

@@ -9,17 +9,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import geopandas as gpd
 import httpx
 from geomltoolkits.downloader import osm as osm_downloader
 from geomltoolkits.downloader import tms as tms_downloader
 from geomltoolkits.raster.burn import burn_labels
 
+from hot_oam_dataset.feature_spec import DEFAULT_FEATURE_TYPE, FeatureSpec, resolve_feature_spec
 from hot_oam_dataset.tm_client import TaskingManagerProject
 
 logger = logging.getLogger(__name__)
 
 TILE_ZOOM = 19
 TILE_PREFIX = "OAM"
+TILE_SIZE_PIXELS = 256
 MINIMUM_VALID_CHIP_BYTES = 5000
 PROBE_MAX_RETRIES = 3
 PROBE_TIMEOUT = 15
@@ -32,9 +35,16 @@ class DatasetConfig:
     zoom: int = TILE_ZOOM
     prefix: str = TILE_PREFIX
     georeference: bool = True
-    feature_type: str = "building"
+    feature_type: str = DEFAULT_FEATURE_TYPE
     burn_binary_masks: bool = True
     burn_value: int = 255
+    label_buffer_meters: float = 0.0
+    tm_mapping_type: str | None = None
+    geometry_types: list[str] | None = None
+
+    @property
+    def feature_spec(self) -> FeatureSpec:
+        return resolve_feature_spec(self.feature_type, self.tm_mapping_type, self.geometry_types)
 
 
 def _lon_lat_to_tile(lon: float, lat: float, zoom: int) -> tuple[int, int]:
@@ -63,7 +73,7 @@ def probe_imagery_url(
     for attempt in range(1, max_retries + 1):
         try:
             response = httpx.get(probe_url, timeout=PROBE_TIMEOUT, follow_redirects=True)
-            if response.status_code < 400:
+            if not response.is_error:
                 return True
             logger.debug(
                 "Probe attempt %d/%d got HTTP %d for %s",
@@ -99,7 +109,7 @@ def build_project_dataset(project: TaskingManagerProject, config: DatasetConfig)
         )
         return
 
-    _save_project_metadata(project, project_dir)
+    _save_project_metadata(project, project_dir, config)
 
     aoi_path = project_dir / "aoi.geojson"
     aoi_geojson = {
@@ -147,12 +157,21 @@ async def _download_chips_and_labels(
 
     osm_work_dir = str(project_dir / "_osm_tmp")
 
-    logger.info("Downloading OSM building data for project #%d", project.project_id)
+    logger.info("Downloading OSM label data for project #%d", project.project_id)
+
+    spec = config.feature_spec
+
+    logger.info(
+        "Requesting OSM tag '%s' as %s geometry",
+        spec.osm_tag,
+        "/".join(spec.geometry_types),
+    )
 
     await osm_downloader.download_osm_data(
         geojson=str(tiles_geojson_path),
         out=osm_work_dir,
-        feature_type=config.feature_type,
+        feature_type=spec.osm_tag,
+        geometry_types=list(spec.geometry_types),
         dump_results=True,
         split_output_by_tiles=True,
         split_prefix=config.prefix,
@@ -186,6 +205,24 @@ def _flatten_label_output(project_dir: Path):
     shutil.rmtree(osm_work_dir, ignore_errors=True)
 
 
+def _write_buffered_labels(labels_path: Path, buffer_meters: float) -> Path:
+    """Widen label geometries in a metric CRS so line features rasterize to a usable width."""
+    labels = gpd.read_file(labels_path)
+
+    if labels.empty:
+        logger.info("No labels to buffer in %s", labels_path)
+        return labels_path
+
+    metric = labels.to_crs(labels.estimate_utm_crs())
+    metric["geometry"] = metric.geometry.buffer(buffer_meters)
+
+    buffered_path = labels_path.with_name("osm-result-buffered.geojson")
+    metric.to_crs(labels.crs).to_file(buffered_path, driver="GeoJSON")
+
+    logger.info("Buffered labels by %.1fm for mask burning: %s", buffer_meters, buffered_path)
+    return buffered_path
+
+
 def _burn_project_binary_masks(project_dir: Path, config: DatasetConfig):
     labels_path = project_dir / "labels" / "osm-result.geojson"
     chips_dir = project_dir / "chips"
@@ -198,8 +235,12 @@ def _burn_project_binary_masks(project_dir: Path, config: DatasetConfig):
         )
         return
 
+    burn_source = labels_path
+    if config.label_buffer_meters > 0:
+        burn_source = _write_buffered_labels(labels_path, config.label_buffer_meters)
+
     burn_labels(
-        labels_path=str(labels_path),
+        labels_path=str(burn_source),
         chips_dir=str(chips_dir),
         output_dir=str(masks_dir),
         burn_value=config.burn_value,
@@ -231,10 +272,10 @@ def _remove_orphan_labels(
     removed_count = 0
     valid_pairs = 0
     empty_label_pairs = 0
-    total_building_polygons = 0
+    total_label_features = 0
 
     if not labels_dir.exists():
-        return removed_count, valid_pairs, empty_label_pairs, total_building_polygons
+        return removed_count, valid_pairs, empty_label_pairs, total_label_features
 
     for label in list(labels_dir.glob(f"{prefix}-*.geojson")):
         if label.stem not in valid_chip_stems:
@@ -244,14 +285,14 @@ def _remove_orphan_labels(
 
         data = json.loads(label.read_text())
         feature_count = len(data.get("features", []))
-        total_building_polygons += feature_count
+        total_label_features += feature_count
 
         if feature_count == 0:
             empty_label_pairs += 1
 
         valid_pairs += 1
 
-    return removed_count, valid_pairs, empty_label_pairs, total_building_polygons
+    return removed_count, valid_pairs, empty_label_pairs, total_label_features
 
 
 def _remove_unpaired_chips(chips_dir: Path, labels_dir: Path, valid_chip_stems: set[str]) -> int:
@@ -280,21 +321,21 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
     if removed_corrupt:
         logger.info("Project #%d: removed %d corrupt/empty chips", project_id, removed_corrupt)
 
-    removed_orphans, valid_pairs, empty_label_pairs, total_building_polygons = (
-        _remove_orphan_labels(labels_dir, valid_chip_stems, prefix)
+    removed_orphans, valid_pairs, empty_label_pairs, total_label_features = _remove_orphan_labels(
+        labels_dir, valid_chip_stems, prefix
     )
 
     removed_unpaired = _remove_unpaired_chips(chips_dir, labels_dir, valid_chip_stems)
 
     logger.info(
-        "Project #%d: %d valid pairs (%d with buildings, %d empty), "
-        "%d building polygons, removed %d orphan labels, %d unpaired chips, "
+        "Project #%d: %d valid pairs (%d with labels, %d empty), "
+        "%d label features, removed %d orphan labels, %d unpaired chips, "
         "%d corrupt chips",
         project_id,
         valid_pairs,
         valid_pairs - empty_label_pairs,
         empty_label_pairs,
-        total_building_polygons,
+        total_label_features,
         removed_orphans,
         removed_unpaired,
         removed_corrupt,
@@ -304,9 +345,9 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
 
     return {
         "valid_pairs": valid_pairs,
-        "pairs_with_buildings": valid_pairs - empty_label_pairs,
-        "pairs_without_buildings": empty_label_pairs,
-        "total_building_polygons": total_building_polygons,
+        "pairs_with_features": valid_pairs - empty_label_pairs,
+        "pairs_without_features": empty_label_pairs,
+        "total_label_features": total_label_features,
         "size_bytes": size_bytes,
         "removed_orphan_labels": removed_orphans,
         "removed_unpaired_chips": removed_unpaired,
@@ -332,7 +373,10 @@ def _update_metadata_with_stats(project_dir: Path, stats: dict):
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
 
-def _save_project_metadata(project: TaskingManagerProject, project_dir: Path):
+def _save_project_metadata(
+    project: TaskingManagerProject, project_dir: Path, config: DatasetConfig
+):
+    spec = config.feature_spec
     metadata = {
         "project_id": project.project_id,
         "name": project.name,
@@ -344,6 +388,13 @@ def _save_project_metadata(project: TaskingManagerProject, project_dir: Path):
         "created": project.created,
         "mapping_types": project.mapping_types,
         "bbox": project.bbox,
+        "feature_type": spec.osm_tag,
+        "tm_mapping_type": spec.tm_mapping_type,
+        "geometry_types": list(spec.geometry_types),
+        "tile_prefix": config.prefix,
+        "zoom": config.zoom,
+        "tile_size_pixels": TILE_SIZE_PIXELS,
+        "label_buffer_meters": config.label_buffer_meters,
     }
     (project_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
@@ -352,8 +403,9 @@ def build_all_projects(
     projects: list[TaskingManagerProject],
     config: DatasetConfig,
     dataset_version: str = "1.0.0",
-):
+) -> list[int]:
     logger.info("Building dataset for %d projects", len(projects))
+    failed_project_ids: list[int] = []
 
     for i, project in enumerate(projects, 1):
         logger.info(
@@ -367,9 +419,20 @@ def build_all_projects(
             build_project_dataset(project, config)
         except Exception:
             logger.exception("Failed to process project #%d", project.project_id)
+            failed_project_ids.append(project.project_id)
 
     aggregate_dataset_stats(config.output_dir, dataset_version=dataset_version)
+
+    if failed_project_ids:
+        logger.error(
+            "%d of %d projects failed: %s",
+            len(failed_project_ids),
+            len(projects),
+            failed_project_ids,
+        )
+
     logger.info("Dataset build complete. Output: %s", config.output_dir)
+    return failed_project_ids
 
 
 def _collect_per_project_stats(output_dir: Path) -> list[tuple[dict, dict]]:
@@ -401,76 +464,94 @@ def _bbox_area_sq_km(bbox: list[float]) -> float:
     return round(width_km * height_km, 2)
 
 
-def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version: str) -> dict:
-    total_pairs = 0
-    total_with_buildings = 0
-    total_without_buildings = 0
-    total_building_polygons = 0
-    total_size_bytes = 0
-    total_area_sq_km = 0.0
-    countries: Counter[str] = Counter()
-    organisations: Counter[str] = Counter()
-    country_tiles: Counter[str] = Counter()
-    country_polygons: Counter[str] = Counter()
-    country_area: Counter[str] = Counter()
-    project_stats = []
+def _distinct_metadata_values(collected: list[tuple[dict, dict]], key: str, default) -> list:
+    values = {metadata.get(key, default) for metadata, _ in collected}
+    return sorted(values, key=str)
 
-    for metadata, stats in collected:
-        total_pairs += stats["valid_pairs"]
-        total_with_buildings += stats["pairs_with_buildings"]
-        total_without_buildings += stats["pairs_without_buildings"]
-        total_building_polygons += stats["total_building_polygons"]
-        total_size_bytes += stats.get("size_bytes", 0)
 
-        country = metadata.get("country", "Unknown")
-        countries[country] += 1
-        organisations[metadata.get("organisation", "Unknown")] += 1
-        country_tiles[country] += stats["valid_pairs"]
-        country_polygons[country] += stats["total_building_polygons"]
+def _single_or_mixed(values: list):
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else values
 
-        area = _bbox_area_sq_km(metadata.get("bbox", []))
-        total_area_sq_km += area
-        country_area[country] += area
 
-        project_stats.append(
-            {
-                "project_id": metadata["project_id"],
-                "name": metadata["name"],
-                "country": country,
-                "organisation": metadata.get("organisation", ""),
-                "valid_pairs": stats["valid_pairs"],
-                "pairs_with_buildings": stats["pairs_with_buildings"],
-                "pairs_without_buildings": stats["pairs_without_buildings"],
-                "total_building_polygons": stats["total_building_polygons"],
-                "area_sq_km": area,
-                "size_mb": round(stats.get("size_bytes", 0) / (1024 * 1024), 1),
-            }
-        )
-
-    country_details = {
-        c: {
-            "projects": countries[c],
-            "tiles": country_tiles[c],
-            "polygons": country_polygons[c],
-            "area_sq_km": round(country_area[c], 2),
-        }
-        for c in countries
+def _project_report(metadata: dict, stats: dict, area_sq_km: float) -> dict:
+    return {
+        "project_id": metadata["project_id"],
+        "name": metadata["name"],
+        "country": metadata.get("country", "Unknown"),
+        "organisation": metadata.get("organisation", ""),
+        "feature_type": metadata.get("feature_type", DEFAULT_FEATURE_TYPE),
+        "valid_pairs": stats["valid_pairs"],
+        "pairs_with_features": stats["pairs_with_features"],
+        "pairs_without_features": stats["pairs_without_features"],
+        "total_label_features": stats["total_label_features"],
+        "area_sq_km": area_sq_km,
+        "size_mb": round(stats.get("size_bytes", 0) / (1024 * 1024), 1),
     }
+
+
+def _accumulate_country_details(project_reports: list[dict]) -> dict[str, dict]:
+    projects: Counter[str] = Counter()
+    tiles: Counter[str] = Counter()
+    features: Counter[str] = Counter()
+    area: Counter[str] = Counter()
+
+    for report in project_reports:
+        country = report["country"]
+        projects[country] += 1
+        tiles[country] += report["valid_pairs"]
+        features[country] += report["total_label_features"]
+        area[country] += report["area_sq_km"]
+
+    return {
+        country: {
+            "projects": projects[country],
+            "tiles": tiles[country],
+            "features": features[country],
+            "area_sq_km": round(area[country], 2),
+        }
+        for country in projects
+    }
+
+
+def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version: str) -> dict:
+    project_reports = [
+        _project_report(metadata, stats, _bbox_area_sq_km(metadata.get("bbox", [])))
+        for metadata, stats in collected
+    ]
+
+    total_pairs = sum(r["valid_pairs"] for r in project_reports)
+    total_label_features = sum(r["total_label_features"] for r in project_reports)
+    total_size_bytes = sum(stats.get("size_bytes", 0) for _, stats in collected)
+
+    countries = Counter(r["country"] for r in project_reports)
+    organisations = Counter(metadata.get("organisation", "Unknown") for metadata, _ in collected)
+    country_details = _accumulate_country_details(project_reports)
+
+    feature_types = _distinct_metadata_values(collected, "feature_type", DEFAULT_FEATURE_TYPE)
+    label_noun = (
+        resolve_feature_spec(feature_types[0]).label_noun if len(feature_types) == 1 else "features"
+    )
 
     return {
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "dataset_version": dataset_version,
         "total_projects": len(collected),
         "total_tile_pairs": total_pairs,
-        "tiles_with_buildings": total_with_buildings,
-        "tiles_without_buildings": total_without_buildings,
-        "total_building_polygons": total_building_polygons,
-        "avg_buildings_per_tile": (
-            round(total_building_polygons / total_pairs, 1) if total_pairs else 0
+        "tiles_with_features": sum(r["pairs_with_features"] for r in project_reports),
+        "tiles_without_features": sum(r["pairs_without_features"] for r in project_reports),
+        "total_label_features": total_label_features,
+        "avg_features_per_tile": (
+            round(total_label_features / total_pairs, 1) if total_pairs else 0
         ),
-        "total_area_sq_km": round(total_area_sq_km, 2),
-        "tile_size_pixels": 256,
-        "zoom_level": TILE_ZOOM,
+        "total_area_sq_km": round(sum(r["area_sq_km"] for r in project_reports), 2),
+        "feature_type": _single_or_mixed(feature_types),
+        "label_noun": label_noun,
+        "tile_size_pixels": _single_or_mixed(
+            _distinct_metadata_values(collected, "tile_size_pixels", TILE_SIZE_PIXELS)
+        ),
+        "zoom_level": _single_or_mixed(_distinct_metadata_values(collected, "zoom", TILE_ZOOM)),
         "tile_prefix": TILE_PREFIX,
         "imagery_source": "OpenAerialMap",
         "label_source": "OpenStreetMap",
@@ -479,7 +560,7 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         "countries": dict(countries.most_common()),
         "country_details": dict(sorted(country_details.items(), key=lambda x: -x[1]["tiles"])),
         "organisations": dict(organisations.most_common()),
-        "projects": project_stats,
+        "projects": project_reports,
     }
 
 
@@ -504,10 +585,12 @@ def _print_dataset_summary(stats: dict):
     print(f"{'=' * width}")
     print(f"  Projects:              {stats['total_projects']}")
     print(f"  Total tile pairs:      {stats['total_tile_pairs']:,}")
-    print(f"  Tiles with buildings:  {stats['tiles_with_buildings']:,}")
-    print(f"  Tiles without:         {stats['tiles_without_buildings']:,}")
-    print(f"  Building polygons:     {stats['total_building_polygons']:,}")
-    print(f"  Avg buildings/tile:    {stats['avg_buildings_per_tile']}")
+    noun = stats.get("label_noun", "features")
+    print(f"  Feature type:          {stats.get('feature_type')}")
+    print(f"  Tiles with {noun}:".ljust(25) + f"{stats['tiles_with_features']:,}")
+    print(f"  Tiles without:         {stats['tiles_without_features']:,}")
+    print(f"  Label {noun}:".ljust(25) + f"{stats['total_label_features']:,}")
+    print(f"  Avg {noun}/tile:".ljust(25) + f"{stats['avg_features_per_tile']}")
     tile_px = stats["tile_size_pixels"]
     print(f"  Tile size:             {tile_px}x{tile_px} px")
     print(f"  Zoom level:            {stats['zoom_level']}")

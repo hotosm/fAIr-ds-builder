@@ -9,6 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Dataset build output
 dataset/
+*-dataset/
+
+.claude/
 .env
+oam_projects.csv
 soul.md

@@ -1,90 +1,94 @@
 import json
 import logging
 import re
+import shutil
 import tarfile
 from pathlib import Path
 
 from datasets import Dataset, DatasetDict, Features, Image, Value
 from huggingface_hub import DatasetCard, HfApi
+from huggingface_hub.errors import HfHubHTTPError
 
-from hot_oam_dataset.split_generator import SPLIT_NAMES, compute_split_stats, load_splits
+from hot_oam_dataset.feature_spec import DEFAULT_FEATURE_TYPE
+from hot_oam_dataset.split_generator import (
+    SPLIT_NAMES,
+    SPLIT_TRAIN,
+    compute_split_stats,
+    load_splits,
+)
 
 logger = logging.getLogger(__name__)
 
-TILE_ID_PATTERN = re.compile(r"^OAM-(\d+)-(\d+)-(\d+)$")
+TILE_ID_PATTERN = re.compile(r"^(?P<prefix>.+)-(?P<x>\d+)-(?P<y>\d+)-(?P<z>\d+)$")
 TILE_TITLE_PATTERN = re.compile(r"Tile\(x=(\d+), y=(\d+), z=(\d+)\)")
 CARD_AUTO_STATS_START = "<!-- AUTO_STATS_START -->"
 CARD_AUTO_STATS_END = "<!-- AUTO_STATS_END -->"
+CARD_FILENAME = "dataset_card.md"
+DEFAULT_TILE_PREFIX = "OAM"
+
+
+def _project_columns(metadata: dict) -> dict:
+    return {
+        "project_id": metadata["project_id"],
+        "project_name": metadata["name"],
+        "country": metadata.get("country", ""),
+        "organisation": metadata.get("organisation", ""),
+        "imagery_url": metadata.get("imagery_url", ""),
+        "feature_type": metadata.get("feature_type", DEFAULT_FEATURE_TYPE),
+    }
+
+
+def _tile_record(chip_path: Path, project_dir: Path, tile_bounds: dict[str, dict]) -> dict | None:
+    tile_id = chip_path.stem
+    label_path = project_dir / "labels" / f"{tile_id}.geojson"
+    mask_path = project_dir / "masks" / f"{tile_id}.tif"
+
+    tile_match = TILE_ID_PATTERN.match(tile_id)
+    if not label_path.exists() or not tile_match:
+        return None
+
+    label_data = json.loads(label_path.read_text())
+    bounds = tile_bounds.get(tile_id, {})
+
+    return {
+        "image": str(chip_path),
+        "mask": str(mask_path) if mask_path.exists() else None,
+        "tile_id": tile_id,
+        "tile_x": int(tile_match.group("x")),
+        "tile_y": int(tile_match.group("y")),
+        "tile_z": int(tile_match.group("z")),
+        "num_features": len(label_data.get("features", [])),
+        "label_geojson": json.dumps(label_data),
+        "bbox_west": bounds.get("west", 0.0),
+        "bbox_south": bounds.get("south", 0.0),
+        "bbox_east": bounds.get("east", 0.0),
+        "bbox_north": bounds.get("north", 0.0),
+    }
+
+
+def _project_parquet_records(project_dir: Path) -> list[dict]:
+    metadata_path = project_dir / "metadata.json"
+    if not metadata_path.exists():
+        return []
+
+    metadata = json.loads(metadata_path.read_text())
+    tile_prefix = metadata.get("tile_prefix", DEFAULT_TILE_PREFIX)
+    project_columns = _project_columns(metadata)
+    tile_bounds = _load_tile_bounds(project_dir / "tiles.geojson", tile_prefix)
+
+    records = []
+    for chip_path in sorted((project_dir / "chips").glob(f"{tile_prefix}-*.tif")):
+        tile_record = _tile_record(chip_path, project_dir, tile_bounds)
+        if tile_record:
+            records.append({**tile_record, **project_columns})
+
+    return records
 
 
 def _collect_parquet_records(dataset_dir: Path) -> list[dict]:
     records = []
-
     for project_dir in sorted(dataset_dir.glob("project_*")):
-        metadata_path = project_dir / "metadata.json"
-        if not metadata_path.exists():
-            continue
-
-        metadata = json.loads(metadata_path.read_text())
-        project_id = metadata["project_id"]
-        project_name = metadata["name"]
-        country = metadata.get("country", "")
-        organisation = metadata.get("organisation", "")
-        imagery_url = metadata.get("imagery_url", "")
-
-        chips_dir = project_dir / "chips"
-        masks_dir = project_dir / "masks"
-        labels_dir = project_dir / "labels"
-        tiles_geojson_path = project_dir / "tiles.geojson"
-
-        tile_bounds = _load_tile_bounds(tiles_geojson_path)
-
-        for chip_path in sorted(chips_dir.glob("OAM-*.tif")):
-            tile_id = chip_path.stem
-            label_path = labels_dir / f"{tile_id}.geojson"
-            mask_path = masks_dir / f"{tile_id}.tif"
-
-            if not label_path.exists():
-                continue
-
-            tile_match = TILE_ID_PATTERN.match(tile_id)
-            if not tile_match:
-                continue
-
-            tile_x, tile_y, tile_z = (
-                int(tile_match.group(1)),
-                int(tile_match.group(2)),
-                int(tile_match.group(3)),
-            )
-
-            label_data = json.loads(label_path.read_text())
-            num_buildings = len(label_data.get("features", []))
-            label_geojson = json.dumps(label_data)
-
-            bounds = tile_bounds.get(tile_id, {})
-
-            records.append(
-                {
-                    "image": str(chip_path),
-                    "mask": str(mask_path) if mask_path.exists() else None,
-                    "tile_id": tile_id,
-                    "tile_x": tile_x,
-                    "tile_y": tile_y,
-                    "tile_z": tile_z,
-                    "project_id": project_id,
-                    "project_name": project_name,
-                    "country": country,
-                    "organisation": organisation,
-                    "imagery_url": imagery_url,
-                    "num_buildings": num_buildings,
-                    "label_geojson": label_geojson,
-                    "bbox_west": bounds.get("west", 0.0),
-                    "bbox_south": bounds.get("south", 0.0),
-                    "bbox_east": bounds.get("east", 0.0),
-                    "bbox_north": bounds.get("north", 0.0),
-                }
-            )
-
+        records.extend(_project_parquet_records(project_dir))
     return records
 
 
@@ -102,7 +106,8 @@ def _parquet_features() -> Features:
             "country": Value("string"),
             "organisation": Value("string"),
             "imagery_url": Value("string"),
-            "num_buildings": Value("int32"),
+            "feature_type": Value("string"),
+            "num_features": Value("int32"),
             "label_geojson": Value("large_string"),
             "bbox_west": Value("float64"),
             "bbox_south": Value("float64"),
@@ -113,8 +118,9 @@ def _parquet_features() -> Features:
 
 
 def _records_to_dataset(records: list[dict], dataset_version: str) -> Dataset:
-    column_data = {key: [r[key] for r in records] for key in records[0]}
-    dataset = Dataset.from_dict(column_data, features=_parquet_features())
+    features = _parquet_features()
+    column_data = {name: [record[name] for record in records] for name in features}
+    dataset = Dataset.from_dict(column_data, features=features)
     dataset.info.version = dataset_version
     return dataset
 
@@ -134,13 +140,18 @@ def generate_parquet(
     splits = load_splits(dataset_dir)
 
     if splits:
-        _generate_split_parquets(records, splits, output_dir, dataset_version)
+        split_counts = _generate_split_parquets(records, splits, output_dir, dataset_version)
     else:
         logger.info("No splits.json found, generating single Parquet")
         dataset = _records_to_dataset(records, dataset_version)
         dataset.to_parquet(str(output_dir / "data.parquet"))
+        split_counts = {SPLIT_TRAIN: len(records)}
 
-    _update_dataset_card(dataset_dir, num_examples=len(records), dataset_version=dataset_version)
+    _update_dataset_card(
+        dataset_dir,
+        split_counts=split_counts,
+        dataset_version=dataset_version,
+    )
 
     logger.info("Parquet saved to %s (version %s)", output_dir, dataset_version)
 
@@ -150,7 +161,7 @@ def _generate_split_parquets(
     splits: dict[int, str],
     output_dir: Path,
     dataset_version: str,
-):
+) -> dict[str, int]:
     split_records: dict[str, list[dict]] = {name: [] for name in SPLIT_NAMES}
     unassigned = 0
 
@@ -164,6 +175,7 @@ def _generate_split_parquets(
     if unassigned:
         logger.warning("%d tiles had no split assignment, excluded from output", unassigned)
 
+    split_counts = {}
     for split_name in SPLIT_NAMES:
         split_recs = split_records[split_name]
         if not split_recs:
@@ -173,7 +185,10 @@ def _generate_split_parquets(
         dataset = _records_to_dataset(split_recs, dataset_version)
         parquet_path = output_dir / f"{split_name}.parquet"
         dataset.to_parquet(str(parquet_path))
+        split_counts[split_name] = len(split_recs)
         logger.info("  %s: %d records -> %s", split_name, len(split_recs), parquet_path)
+
+    return split_counts
 
 
 def _load_parquet_as_dataset_or_dict(
@@ -196,10 +211,10 @@ def _load_parquet_as_dataset_or_dict(
     raise FileNotFoundError(msg)
 
 
-def _count_examples(dataset: Dataset | DatasetDict) -> int:
+def _split_counts(dataset: Dataset | DatasetDict) -> dict[str, int]:
     if isinstance(dataset, DatasetDict):
-        return sum(len(ds) for ds in dataset.values())
-    return len(dataset)
+        return {str(name): len(split) for name, split in dataset.items()}
+    return {SPLIT_TRAIN: len(dataset)}
 
 
 def push_to_hub(
@@ -216,17 +231,20 @@ def push_to_hub(
         generate_parquet(dataset_dir, parquet_dir, dataset_version=dataset_version)
 
     dataset = _load_parquet_as_dataset_or_dict(parquet_dir)
-    num_examples = _count_examples(dataset)
 
-    _update_dataset_card(dataset_dir, num_examples=num_examples, dataset_version=dataset_version)
+    _update_dataset_card(
+        dataset_dir,
+        split_counts=_split_counts(dataset),
+        dataset_version=dataset_version,
+    )
 
     logger.info("Pushing to HuggingFace Hub: %s", repo_id)
     _push_dataset_with_card_retry(dataset=dataset, repo_id=repo_id, dataset_version=dataset_version)
 
-    dataset_card_path = Path("dataset_card.md")
-    if dataset_card_path.exists():
-        logger.info("Uploading dataset card")
-        card = DatasetCard(dataset_card_path.read_text())
+    card_path = resolve_dataset_card(dataset_dir)
+    if card_path:
+        logger.info("Uploading dataset card %s", card_path)
+        card = DatasetCard(card_path.read_text())
         card.push_to_hub(repo_id, commit_message=f"Update dataset card v{dataset_version}")
 
     _tag_hf_revision(repo_id, dataset_version)
@@ -278,7 +296,7 @@ def push_raw_to_hub(
     api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
 
     root_level_files = ["projects_map.geojson", "dataset_stats.json", "projects_summary.json"]
-    ignore = ["parquet/*", ".cache/*"] + root_level_files
+    ignore = ["parquet/*", ".cache/*", CARD_FILENAME, *root_level_files]
     if compress:
         ignore.extend(["*/chips/*", "*/masks/*", "*/labels/*"])
 
@@ -312,8 +330,8 @@ def _tag_hf_revision(repo_id: str, dataset_version: str) -> None:
     try:
         api.create_tag(repo_id=repo_id, repo_type="dataset", tag=tag, tag_message=tag)
         logger.info("Tagged HF dataset revision: %s", tag)
-    except Exception as exc:
-        logger.warning("Could not create HF tag %s: %s", tag, exc)
+    except HfHubHTTPError as exc:
+        logger.warning("Could not create HF tag %s, dataset is published regardless: %s", tag, exc)
 
 
 def _push_dataset_with_card_retry(
@@ -327,7 +345,6 @@ def _push_dataset_with_card_retry(
             max_shard_size="500MB",
             commit_message=commit_message,
         )
-        return
     except TypeError as exc:
         known_metadata_bugs = [
             "unsupported operand type(s) for -=",
@@ -341,6 +358,8 @@ def _push_dataset_with_card_retry(
             "Resetting remote README and retrying push.",
             exc,
         )
+    else:
+        return
 
     api = HfApi()
     try:
@@ -350,8 +369,8 @@ def _push_dataset_with_card_retry(
             repo_type="dataset",
             commit_message="Reset README to recover from metadata merge bug",
         )
-    except Exception as delete_exc:
-        logger.warning("Could not delete remote README before retry: %s", delete_exc)
+    except HfHubHTTPError as delete_exc:
+        logger.warning("No remote README to reset, retrying push anyway: %s", delete_exc)
 
     dataset.push_to_hub(
         repo_id,
@@ -360,7 +379,7 @@ def _push_dataset_with_card_retry(
     )
 
 
-def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
+def _load_tile_bounds(tiles_geojson_path: Path, tile_prefix: str) -> dict[str, dict]:
     if not tiles_geojson_path.exists():
         return {}
 
@@ -373,7 +392,7 @@ def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
         match = TILE_TITLE_PATTERN.search(title)
         if not match:
             continue
-        tile_id = f"OAM-{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        tile_id = f"{tile_prefix}-{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
         geometry = feature.get("geometry", {})
         coords = geometry.get("coordinates", [[]])
@@ -392,20 +411,51 @@ def _load_tile_bounds(tiles_geojson_path: Path) -> dict[str, dict]:
     return bounds
 
 
+def resolve_dataset_card(dataset_dir: Path) -> Path | None:
+    """Return the dataset's own card, seeding it from the repo template on first use."""
+    card_path = dataset_dir / CARD_FILENAME
+    if card_path.exists():
+        return card_path
+
+    template_path = Path(CARD_FILENAME)
+    if not template_path.exists():
+        logger.warning("No dataset card template at %s, skipping card generation", template_path)
+        return None
+
+    shutil.copyfile(template_path, card_path)
+    logger.info("Seeded dataset card %s from %s", card_path, template_path)
+    return card_path
+
+
+def _sync_card_split_metadata(card_text: str, split_counts: dict[str, int]) -> str:
+    """Rewrite the card front matter split sizes to match what is being published."""
+    card = DatasetCard(card_text)
+    dataset_info = card.data.get("dataset_info")
+    if not dataset_info:
+        return card_text
+
+    dataset_info["splits"] = [
+        {"name": name, "num_examples": count} for name, count in split_counts.items()
+    ]
+    card.data["dataset_info"] = dataset_info
+    return str(card)
+
+
 def _update_dataset_card(
     dataset_dir: Path,
-    num_examples: int,
+    split_counts: dict[str, int],
     dataset_version: str,
 ) -> None:
-    dataset_card_path = Path("dataset_card.md")
-    if not dataset_card_path.exists():
+    card_path = resolve_dataset_card(dataset_dir)
+    if not card_path:
         return
 
-    card_text = dataset_card_path.read_text()
+    num_examples = sum(split_counts.values())
+    card_text = _sync_card_split_metadata(card_path.read_text(), split_counts)
     card_text = _upsert_generated_stats_block(card_text, dataset_dir, num_examples, dataset_version)
 
-    dataset_card_path.write_text(card_text)
-    logger.info("Updated dataset card dynamic stats (%d examples)", num_examples)
+    card_path.write_text(card_text)
+    logger.info("Updated dataset card %s (%d examples)", card_path, num_examples)
 
 
 def _upsert_generated_stats_block(
@@ -415,6 +465,7 @@ def _upsert_generated_stats_block(
     dataset_version: str,
 ) -> str:
     stats = _load_dataset_stats(dataset_dir)
+    noun = (stats or {}).get("label_noun", "features")
 
     lines = [
         CARD_AUTO_STATS_START,
@@ -424,48 +475,10 @@ def _upsert_generated_stats_block(
     ]
 
     if stats:
-        lines.extend(
-            [
-                f"- Total projects: {stats.get('total_projects', 0):,}",
-                f"- Tiles with features: {stats.get('tiles_with_buildings', 0):,}",
-                f"- Tiles without features: {stats.get('tiles_without_buildings', 0):,}",
-                f"- Total polygons: {stats.get('total_building_polygons', 0):,}",
-                f"- Avg buildings per tile: {stats.get('avg_buildings_per_tile', 0)}",
-                f"- Total area: ~{stats.get('total_area_sq_km', 0):,.1f} sq km",
-                f"- Countries: {len(stats.get('countries', {}))}",
-                f"- Generated at: {stats.get('generated_at', '')}",
-            ]
-        )
+        lines.extend(_headline_stat_lines(stats, noun))
+        lines.extend(_country_table_lines(stats.get("country_details", {}), noun))
 
-        country_details = stats.get("country_details", {})
-        if country_details:
-            lines.append("")
-            lines.append("### Coverage by Country")
-            lines.append("")
-            lines.append("| Country | Projects | Tiles | Buildings | Area (sq km) |")
-            lines.append("|---------|----------|-------|-----------|-------------|")
-            for country, info in country_details.items():
-                lines.append(
-                    f"| {country} | {info['projects']} "
-                    f"| {info['tiles']:,} | {info['polygons']:,} "
-                    f"| {info['area_sq_km']:,.1f} |"
-                )
-
-    split_stats = compute_split_stats(dataset_dir)
-    if split_stats:
-        lines.append("")
-        lines.append("### Data Splits")
-        lines.append("")
-        lines.append("| Split | Projects | Tiles | Buildings | Countries | % of Tiles |")
-        lines.append("|-------|----------|-------|-----------|-----------|------------|")
-        for split_name in SPLIT_NAMES:
-            info = split_stats[split_name]
-            lines.append(
-                f"| {split_name} | {info['projects']} "
-                f"| {info['tiles']:,} | {info['buildings']:,} "
-                f"| {len(info['countries'])} | {info['percent']:.1f}% |"
-            )
-
+    lines.extend(_split_table_lines(compute_split_stats(dataset_dir), noun))
     lines.append(CARD_AUTO_STATS_END)
     block = "\n" + "\n".join(lines) + "\n"
 
@@ -477,6 +490,61 @@ def _upsert_generated_stats_block(
         return pattern.sub("\n".join(lines), card_text, count=1)
 
     return card_text.rstrip() + "\n" + block
+
+
+def _headline_stat_lines(stats: dict, noun: str) -> list[str]:
+    return [
+        f"- Total projects: {stats.get('total_projects', 0):,}",
+        f"- Feature type: {stats.get('feature_type', '')}",
+        f"- Tiles with labels: {stats.get('tiles_with_features', 0):,}",
+        f"- Tiles without labels: {stats.get('tiles_without_features', 0):,}",
+        f"- Total label features: {stats.get('total_label_features', 0):,}",
+        f"- Avg {noun} per tile: {stats.get('avg_features_per_tile', 0)}",
+        f"- Total area: ~{stats.get('total_area_sq_km', 0):,.1f} sq km",
+        f"- Countries: {len(stats.get('countries', {}))}",
+        f"- Generated at: {stats.get('generated_at', '')}",
+    ]
+
+
+def _country_table_lines(country_details: dict, noun: str) -> list[str]:
+    if not country_details:
+        return []
+
+    lines = [
+        "",
+        "### Coverage by Country",
+        "",
+        f"| Country | Projects | Tiles | {noun.title()} | Area (sq km) |",
+        "|---------|----------|-------|-----------|-------------|",
+    ]
+    lines.extend(
+        f"| {country} | {info['projects']} "
+        f"| {info['tiles']:,} | {info['features']:,} "
+        f"| {info['area_sq_km']:,.1f} |"
+        for country, info in country_details.items()
+    )
+    return lines
+
+
+def _split_table_lines(split_stats: dict[str, dict] | None, noun: str) -> list[str]:
+    if not split_stats:
+        return []
+
+    lines = [
+        "",
+        "### Data Splits",
+        "",
+        f"| Split | Projects | Tiles | {noun.title()} | Countries | % of Tiles |",
+        "|-------|----------|-------|-----------|-----------|------------|",
+    ]
+    for split_name in SPLIT_NAMES:
+        info = split_stats[split_name]
+        lines.append(
+            f"| {split_name} | {info['projects']} "
+            f"| {info['tiles']:,} | {info['features']:,} "
+            f"| {len(info['countries'])} | {info['percent']:.1f}% |"
+        )
+    return lines
 
 
 def _load_dataset_stats(dataset_dir: Path) -> dict | None:

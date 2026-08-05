@@ -24,7 +24,7 @@ class ProjectCluster:
 @dataclass
 class ProjectDetail:
     tiles: int
-    buildings: int
+    features: int
     country: str
 
 
@@ -37,7 +37,7 @@ def _load_project_details(dataset_dir: Path) -> dict[int, ProjectDetail]:
     return {
         p["project_id"]: ProjectDetail(
             tiles=p["valid_pairs"],
-            buildings=p.get("total_building_polygons", 0),
+            features=p.get("total_label_features", 0),
             country=p.get("country", ""),
         )
         for p in stats.get("projects", [])
@@ -91,7 +91,7 @@ def assign_splits(
     if total_tiles == 0:
         return {}
 
-    split_tiles: dict[str, int] = {name: 0 for name in SPLIT_NAMES}
+    split_tiles: dict[str, int] = dict.fromkeys(SPLIT_NAMES, 0)
     split_targets = {name: ratio * total_tiles for name, ratio in ratios.items()}
     assignments: dict[int, str] = {}
 
@@ -179,7 +179,7 @@ def _summarize_splits(
     for split_name in SPLIT_NAMES:
         project_ids = [pid for pid, s in assignments.items() if s == split_name]
         tiles = sum(details[pid].tiles for pid in project_ids if pid in details)
-        buildings = sum(details[pid].buildings for pid in project_ids if pid in details)
+        features = sum(details[pid].features for pid in project_ids if pid in details)
         countries = sorted(
             {details[pid].country for pid in project_ids if pid in details and details[pid].country}
         )
@@ -187,7 +187,7 @@ def _summarize_splits(
         summary[split_name] = {
             "projects": len(project_ids),
             "tiles": tiles,
-            "buildings": buildings,
+            "features": features,
             "countries": countries,
             "percent": round(pct, 1),
         }
@@ -200,11 +200,11 @@ def _log_split_summary(summary: dict[str, dict]):
     for split_name in SPLIT_NAMES:
         info = summary[split_name]
         logger.info(
-            "  %s: %d projects, %d tiles, %d buildings, %d countries (%.1f%%)",
+            "  %s: %d projects, %d tiles, %d label features, %d countries (%.1f%%)",
             split_name,
             info["projects"],
             info["tiles"],
-            info["buildings"],
+            info["features"],
             len(info["countries"]),
             info["percent"],
         )

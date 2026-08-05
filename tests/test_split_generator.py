@@ -154,26 +154,26 @@ def test_build_clusters_excludes_projects_without_stats(dataset_dir):
     assert 99 not in all_pids
 
 
-def test_compute_split_stats_includes_buildings_and_countries(dataset_dir):
+def test_compute_split_stats_includes_features_and_countries(dataset_dir):
     _write_stats(
         dataset_dir / "dataset_stats.json",
         [
             {
                 "project_id": 1,
                 "valid_pairs": 800,
-                "total_building_polygons": 5000,
+                "total_label_features": 5000,
                 "country": "Kenya",
             },
             {
                 "project_id": 2,
                 "valid_pairs": 100,
-                "total_building_polygons": 600,
+                "total_label_features": 600,
                 "country": "Peru",
             },
             {
                 "project_id": 3,
                 "valid_pairs": 100,
-                "total_building_polygons": 400,
+                "total_label_features": 400,
                 "country": "Ghana",
             },
         ],
@@ -191,12 +191,12 @@ def test_compute_split_stats_includes_buildings_and_countries(dataset_dir):
     stats = compute_split_stats(dataset_dir)
 
     assert stats is not None
-    total_buildings = sum(s["buildings"] for s in stats.values())
-    assert total_buildings == 6000
+    total_features = sum(s["features"] for s in stats.values())
+    assert total_features == 6000
 
     for split_name in SPLIT_NAMES:
         info = stats[split_name]
-        assert "buildings" in info
+        assert "features" in info
         assert "countries" in info
         assert isinstance(info["countries"], list)
 

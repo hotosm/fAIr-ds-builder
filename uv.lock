@@ -642,6 +642,7 @@ source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "geomltoolkits" },
+    { name = "geopandas" },
     { name = "httpx" },
     { name = "huggingface-hub" },
 ]
@@ -649,6 +650,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "commitizen" },
+    { name = "pandas" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-mock" },
@@ -660,6 +662,7 @@ dev = [
 requires-dist = [
     { name = "datasets", specifier = ">=3.0" },
     { name = "geomltoolkits", specifier = ">=2.0.2" },
+    { name = "geopandas", specifier = ">=1.1.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.25" },
 ]
@@ -667,6 +670,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "commitizen", specifier = ">=4.0" },
+    { name = "pandas", specifier = ">=3.0.1" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-mock", specifier = ">=3.15.1" },

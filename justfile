@@ -26,7 +26,7 @@ build *args:
     uv run hot-oam-dataset --output-dir {{ default_output }} {{ args }}
     uv run hot-oam-dataset --compress-raw --output-dir {{ default_output }}
 
-# Build a hand-picked set of TM projects into a named folder (e.g. just build-projects "25317,25320" freetown-building-dataset)
+# Build a hand-picked set of TM projects into a named folder. Pass --feature-type and friends via args
 build-projects ids output_dir *args:
     uv run hot-oam-dataset --project-ids {{ ids }} --output-dir {{ output_dir }} {{ args }}
     uv run hot-oam-dataset --compress-raw --output-dir {{ output_dir }}

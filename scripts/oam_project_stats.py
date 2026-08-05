@@ -1,114 +1,93 @@
-"""Fetch all OAM projects from TM API and produce a summary DataFrame."""
+"""Summarise every OAM project on the Tasking Manager and dump them to oam_projects.csv."""
+
+import logging
 
 import httpx
 import pandas as pd
 
-TM_API = "https://tasking-manager-production-api.hotosm.org"
-PROJECTS_EP = "/api/v2/projects/"
-OAM_DOMAIN = "openaerialmap.org"
-STATUSES = ("PUBLISHED", "ARCHIVED")
+from hot_oam_dataset.tm_client import MINIMUM_VALIDATION_PERCENT, TaskingManagerClient
+
+CSV_PATH = "oam_projects.csv"
+VALIDATION_BUCKETS = (100, MINIMUM_VALIDATION_PERCENT, 80)
 
 
-def fetch_custom_imagery_project_ids(client: httpx.Client) -> list[int]:
-    ids = []
-    for status in STATUSES:
-        page = 1
-        while True:
-            params = {
-                "imagery": "custom",
-                "omitMapResults": "true",
-                "projectStatuses": status,
-                "page": str(page),
-            }
-            resp = client.get(PROJECTS_EP, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            if not results:
-                break
-            ids.extend(p["projectId"] for p in results)
-            total_pages = data.get("pagination", {}).get("pages", 1)
-            print(f"  {status} page {page}/{total_pages} ({len(results)} projects)")
-            if page >= total_pages:
-                break
-            page += 1
-    return ids
+def build_project_row(client: TaskingManagerClient, detail: dict) -> dict:
+    project = client.build_project_record(detail)
+    return {
+        "project_id": project.project_id,
+        "name": project.name,
+        "status": project.status,
+        "percent_mapped": project.percent_mapped,
+        "percent_validated": project.percent_validated,
+        "is_oam": client.is_oam_project(detail),
+        "has_buildings": "BUILDINGS" in project.mapping_types,
+        "mapping_types": project.mapping_types,
+        "organisation": project.organisation,
+        "country": project.country,
+        "created": project.created,
+        "imagery_url": project.imagery_url,
+    }
 
 
-def fetch_project_detail(client: httpx.Client, pid: int) -> dict | None:
-    try:
-        resp = client.get(f"{PROJECTS_EP}{pid}/")
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError:
-        return None
+def collect_rows(client: TaskingManagerClient) -> tuple[list[dict], int]:
+    rows = []
+    skipped = 0
+
+    for index, project_id in enumerate(client.iter_custom_imagery_project_ids(), 1):
+        try:
+            detail = client.fetch_project_full(project_id)
+        except httpx.HTTPError as exc:
+            print(f"  Skipping project {project_id}: {exc}")
+            skipped += 1
+            continue
+
+        rows.append(build_project_row(client, detail))
+
+        if index % 25 == 0:
+            print(f"  Fetched {index} project details...")
+
+    return rows, skipped
+
+
+def print_summary(frame: pd.DataFrame, oam: pd.DataFrame, skipped: int) -> None:
+    print(f"\n{'=' * 60}")
+    print(f"Skipped (detail fetch failed): {skipped}")
+    print(f"Total custom imagery projects: {len(frame)}")
+    print(f"OAM projects: {len(oam)}")
+
+    print("\n--- OAM project breakdown ---")
+    print(f"With BUILDINGS mapping type: {oam['has_buildings'].sum()}")
+    print(f"Without BUILDINGS type:      {(~oam['has_buildings']).sum()}")
+
+    print("\n--- Validation (OAM only) ---")
+    for threshold in VALIDATION_BUCKETS:
+        print(f">={threshold}% validated: {(oam['percent_validated'] >= threshold).sum()}")
+
+    qualified = oam[oam["has_buildings"] & (oam["percent_validated"] >= MINIMUM_VALIDATION_PERCENT)]
+    print(f"\nOAM + BUILDINGS + >={MINIMUM_VALIDATION_PERCENT}% validated: {len(qualified)}")
+
+    print("\n--- Status distribution (OAM) ---")
+    print(oam["status"].value_counts().to_string())
+    print("\n--- Top organisations (OAM) ---")
+    print(oam["organisation"].value_counts().head(10).to_string())
+    print("\n--- Top countries (OAM) ---")
+    print(oam["country"].value_counts().head(15).to_string())
 
 
 def main():
-    with httpx.Client(base_url=TM_API, timeout=30) as client:
-        print("Fetching custom imagery project IDs...")
-        all_ids = fetch_custom_imagery_project_ids(client)
-        print(f"\nTotal custom imagery projects: {len(all_ids)}")
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-        rows = []
-        for i, pid in enumerate(all_ids, 1):
-            detail = fetch_project_detail(client, pid)
-            if not detail:
-                continue
+    with TaskingManagerClient() as client:
+        print("Fetching custom imagery projects...")
+        rows, skipped = collect_rows(client)
 
-            imagery = detail.get("imagery", "") or ""
-            is_oam = OAM_DOMAIN in imagery
-            mapping_types = detail.get("mappingTypes", [])
-            country_tags = detail.get("countryTag", [])
+    frame = pd.DataFrame(rows)
+    oam = frame[frame["is_oam"]]
 
-            rows.append(
-                {
-                    "project_id": pid,
-                    "name": detail.get("projectInfo", {}).get("name", ""),
-                    "status": detail.get("status", ""),
-                    "percent_mapped": detail.get("percentMapped", 0),
-                    "percent_validated": detail.get("percentValidated", 0),
-                    "is_oam": is_oam,
-                    "has_buildings": "BUILDINGS" in mapping_types,
-                    "mapping_types": mapping_types,
-                    "organisation": detail.get("organisationName", ""),
-                    "country": country_tags[0] if country_tags else "",
-                    "created": detail.get("created", ""),
-                    "imagery_url": imagery,
-                }
-            )
+    print_summary(frame, oam, skipped)
 
-            if i % 25 == 0:
-                print(f"  Fetched {i}/{len(all_ids)} details...")
-
-        df = pd.DataFrame(rows)
-        oam = df[df["is_oam"]]
-
-        print(f"\n{'=' * 60}")
-        print(f"Total custom imagery projects: {len(df)}")
-        print(f"OAM projects: {len(oam)}")
-        print("\n--- OAM project breakdown ---")
-        print(f"With BUILDINGS mapping type: {oam['has_buildings'].sum()}")
-        print(f"Without BUILDINGS type:      {(~oam['has_buildings']).sum()}")
-        print("\n--- Validation (OAM only) ---")
-        print(f"100% validated: {(oam['percent_validated'] == 100).sum()}")
-        print(f">=95% validated: {(oam['percent_validated'] >= 95).sum()}")
-        print(f">=80% validated: {(oam['percent_validated'] >= 80).sum()}")
-        print(f"<80% validated:  {(oam['percent_validated'] < 80).sum()}")
-        print("\n--- OAM + BUILDINGS + >=95% validated ---")
-        qualified = oam[(oam["has_buildings"]) & (oam["percent_validated"] >= 95)]
-        print(f"Qualified projects: {len(qualified)}")
-        print("\n--- Status distribution (OAM) ---")
-        print(oam["status"].value_counts().to_string())
-        print("\n--- Top organisations (OAM) ---")
-        print(oam["organisation"].value_counts().head(10).to_string())
-        print("\n--- Top countries (OAM) ---")
-        print(oam["country"].value_counts().head(15).to_string())
-
-        csv_path = "oam_projects.csv"
-        oam.to_csv(csv_path, index=False)
-        print(f"\nOAM DataFrame saved to {csv_path}")
-        print(f"Full DataFrame shape: {df.shape}, OAM shape: {oam.shape}")
+    oam.to_csv(CSV_PATH, index=False)
+    print(f"\nOAM projects saved to {CSV_PATH} (shape {oam.shape})")
 
 
 if __name__ == "__main__":

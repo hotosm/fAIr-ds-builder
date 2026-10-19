@@ -11,13 +11,9 @@ setup:
     uv sync --all-groups
     uv run pre-commit install --hook-type commit-msg --hook-type pre-commit --hook-type pre-push
 
-# Run all checks: ruff fix + format, ty typecheck, pre-commit hooks, pytest
+# Run the pre-commit hooks on every file: ruff check, ruff format, ty
 lint:
-    uv run ruff check --fix src/ tests/
-    uv run ruff format src/ tests/
-    uv run ty check src/
     uv run pre-commit run --all-files
-    uv run pytest tests/ -v
 
 # Run tests only
 test:

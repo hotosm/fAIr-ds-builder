@@ -8,7 +8,8 @@ Face with a STAC catalogue.
 ## Datasets
 
 From the [fAIr Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
-programme, all in one [STAC catalogue](https://huggingface.co/datasets/hotosm/fAIr-guru-stac).
+programme, all in one [STAC catalogue](https://huggingface.co/datasets/hotosm/fAIr-guru-stac)
+([open in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json)).
 
 | Dataset | Labels | Tasks | Zoom | Projects |
 |---------|--------|-------|------|----------|

@@ -1,14 +1,9 @@
 # Browse with STAC Browser
 
-Paste this URL into [STAC Browser](https://radiantearth.github.io/stac-browser/) and choose
-**Load**:
+[Open the root catalogue in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json).
 
-```text
-https://huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json
-```
-
-It lists one release of each dataset. A single release opens from its own collection URL, such
-as `https://huggingface.co/datasets/hotosm/fAIr-guru-td-buildings/raw/v0.3.2/stac/collection.json`.
+It lists one release of each dataset. A single release opens the same way, for example
+[fAIr-guru-td-buildings v0.3.2](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/hotosm/fAIr-guru-td-buildings/raw/v0.3.2/stac/collection.json).
 
 ![Root catalogue with the six datasets](../assets/stac-browser/start.png)
 

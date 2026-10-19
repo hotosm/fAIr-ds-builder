@@ -30,7 +30,8 @@ hot-oam-dataset --config configs/fair-guru-trees.yaml --update-root-catalog hoto
 1. `--all` downloads tiles and labels, then writes the splits, Parquet, dataset card and STAC.
 2. `--push-to-hub` uploads them and tags the release `v<dataset_version>`.
 3. `--update-root-catalog` links that release in the root STAC catalogue,
-   `https://huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json`.
+   `https://huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json`
+   ([open in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json)).
 
 Raise `dataset_version` before `--all` for each new release. `--push-to-hub` stops when the
 card was built for another version, or when that version is already on the Hub.

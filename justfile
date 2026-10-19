@@ -1,3 +1,5 @@
+set dotenv-load
+
 default_output := "dataset"
 
 # List available recipes
@@ -44,3 +46,7 @@ publish repo_id output_dir=default_output raw="":
 # Publish a named hand-picked dataset folder. Add "raw" as a third arg to also upload raw files.
 publish-projects output_dir repo_id raw="":
     just publish {{ repo_id }} {{ output_dir }} {{ raw }}
+
+# Build one dataset from its YAML config: tiles, splits, Parquet and STAC
+dataset config:
+    uv run hot-oam-dataset --config {{ config }} --all

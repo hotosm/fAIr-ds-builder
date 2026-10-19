@@ -5,8 +5,12 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
 from hot_oam_dataset import __version__
 from hot_oam_dataset.dataset_builder import DatasetConfig, build_all_projects
+from hot_oam_dataset.dataset_card import CardText
+from hot_oam_dataset.fair_catalog import FAIR_API_KEY_ENV, FairSettings, publish_to_fair
 from hot_oam_dataset.feature_spec import (
     DEFAULT_FEATURE_TYPE,
     GEOMETRY_TYPES,
@@ -19,13 +23,25 @@ from hot_oam_dataset.hf_publisher import (
     push_raw_to_hub,
     push_to_hub,
 )
-from hot_oam_dataset.split_generator import generate_splits
+from hot_oam_dataset.split_generator import SplitSettings, generate_splits
+from hot_oam_dataset.stac_export import generate_stac
 from hot_oam_dataset.tm_client import (
     discover_oam_projects,
     fetch_projects_by_ids,
 )
 
 logger = logging.getLogger(__name__)
+
+CARD_CONFIG_KEY = "card"
+FAIR_CONFIG_KEY = "fair"
+SPLIT_CONFIG_KEY = "split"
+
+
+def _non_negative_float(value: str) -> float:
+    number = float(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative, got {number}")
+    return number
 
 
 def _comma_separated_ints(value: str) -> list[int]:
@@ -38,6 +54,31 @@ def _comma_separated_ints(value: str) -> list[int]:
         raise argparse.ArgumentTypeError(f"must be comma-separated integers ({exc})") from exc
 
 
+def _load_config(config_path: Path) -> dict:
+    config = yaml.safe_load(config_path.read_text()) or {}
+    if not isinstance(config, dict):
+        raise SystemExit(f"{config_path} must hold a mapping of option names to values")
+    return config
+
+
+def _config_file_arguments(config: dict) -> list[str]:
+    """Turn the YAML options into flags, so argparse validates them like the command line."""
+    arguments: list[str] = []
+    for key, value in config.items():
+        if key in (CARD_CONFIG_KEY, SPLIT_CONFIG_KEY, FAIR_CONFIG_KEY):
+            continue
+        flag = "--" + str(key).replace("_", "-")
+        if value is True:
+            arguments.append(flag)
+        elif value is False:
+            arguments.append("--no-" + flag.removeprefix("--"))
+        elif isinstance(value, list):
+            arguments.extend([flag, *map(str, value)])
+        else:
+            arguments.extend([flag, str(value)])
+    return arguments
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     hf_repo_id_from_env = os.getenv("HF_DATASET_REPO_ID", "")
     feature_type_from_env = os.getenv("HOT_OAM_FEATURE_TYPE", DEFAULT_FEATURE_TYPE)
@@ -46,9 +87,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Build semantic segmentation datasets from HOT Tasking Manager OAM projects, "
-            "labelled with any OpenStreetMap feature type"
+            "Build segmentation and object detection datasets from HOT Tasking Manager "
+            "OAM projects, labelled with any OpenStreetMap feature type"
         )
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="YAML",
+        help="YAML file of option values for one dataset; command-line flags override it",
     )
     parser.add_argument(
         "--output-dir",
@@ -91,6 +139,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Only discover and list projects without downloading data",
     )
     parser.add_argument(
+        "--all",
+        action="store_true",
+        help="After the build, generate the splits, Parquet, dataset card and STAC catalogue",
+    )
+    parser.add_argument(
+        "--publish-stac",
+        metavar="STAC_API_URL",
+        help=(
+            "Register the dataset in a fAIr STAC API, e.g. https://stac.ai.hotosm.org/stac, "
+            f"after --push-to-hub; needs the config's card and fair sections and {FAIR_API_KEY_ENV}"
+        ),
+    )
+    parser.add_argument(
         "--generate-parquet",
         action="store_true",
         help="Generate HuggingFace-compatible Parquet from existing dataset",
@@ -99,9 +160,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--generate-splits",
         action="store_true",
         help=(
-            "Generate train/validation/test split assignments based on project clusters. "
-            "Projects sharing the same imagery URL are kept in the same split to prevent "
-            "spatial leakage. Writes splits.json to the output directory"
+            "Assign contiguous regions of each project to train, validation or test, as set "
+            "by the config's split section. Writes splits.json to the output directory"
+        ),
+    )
+    parser.add_argument(
+        "--generate-stac",
+        action="store_true",
+        help=(
+            "Write a static STAC Collection under stac/ from the split Parquets: per-project "
+            "imagery COG, GeoParquet labels and tile footprints, and a split map"
         ),
     )
     parser.add_argument(
@@ -175,6 +243,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tag-values",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="VALUE",
+        help=(
+            "Keep only these values of the --feature-type tag, e.g. "
+            "--feature-type natural --tag-values tree tree_group (default: any value)"
+        ),
+    )
+    parser.add_argument(
+        "--require-tags",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="KEY",
+        help=(
+            "Keep only features that also carry these tag keys, any value, e.g. "
+            "--feature-type surface --require-tags highway (default: none)"
+        ),
+    )
+    parser.add_argument(
+        "--negative-ratio",
+        type=_non_negative_float,
+        default=None,
+        metavar="RATIO",
+        help=(
+            "Cap empty tiles in the Parquet at RATIO per labelled tile, per project "
+            "(e.g. 1.0 for a 1:1 balance). Labelled tiles are never dropped. "
+            "Applies to --generate-parquet and --push-to-hub; raw files keep every tile"
+        ),
+    )
+    parser.add_argument(
         "--label-buffer-meters",
         type=float,
         default=0.0,
@@ -197,21 +298,90 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging",
     )
-    return parser.parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    config_path = parser.parse_known_args(argv)[0].config
+    if config_path and not config_path.is_file():
+        parser.error(f"config file {config_path} does not exist")
+    config = _load_config(config_path) if config_path else {}
+    args = parser.parse_args(_config_file_arguments(config) + argv)
+    card = config.get(CARD_CONFIG_KEY)
+    # Reported like any other config error, as a usage message naming the file
+    try:
+        args.card_text = CardText.from_mapping(card) if card is not None else None
+        args.split_settings = SplitSettings.from_mapping(config.get(SPLIT_CONFIG_KEY) or {})
+        fair = config.get(FAIR_CONFIG_KEY)
+        args.fair_settings = FairSettings.from_mapping(fair) if fair is not None else None
+    except (ValueError, TypeError) as exc:
+        parser.error(f"{config_path}: {exc}")
+    single_steps = [
+        flag
+        for flag, chosen in (
+            ("--discover-only", args.discover_only),
+            ("--generate-splits", args.generate_splits),
+            ("--generate-parquet", args.generate_parquet),
+            ("--generate-stac", args.generate_stac),
+            ("--push-to-hub", args.push_to_hub is not None),
+            ("--push-raw", args.push_raw is not None),
+            ("--publish-stac", args.publish_stac),
+            ("--compress-raw", args.compress_raw),
+        )
+        if chosen
+    ]
+    if args.all and single_steps:
+        parser.error(f"--all runs every build step and cannot be combined with {single_steps[0]}")
+    if args.publish_stac and len(single_steps) > 1:
+        parser.error("--publish-stac runs on its own, after --push-to-hub has finished")
+    return args
+
+
+def _generate_parquet(args, output_dir: Path) -> None:
+    generate_parquet(
+        output_dir,
+        dataset_version=args.dataset_version,
+        negative_ratio=args.negative_ratio,
+        card_text=args.card_text,
+    )
+
+
+def _generate_stac(args, output_dir: Path) -> None:
+    generate_stac(output_dir, dataset_version=args.dataset_version, card_text=args.card_text)
 
 
 def _run_standalone_command(args, output_dir: Path) -> bool:
     if args.generate_splits:
-        generate_splits(output_dir)
+        generate_splits(output_dir, args.split_settings)
         return True
 
     if args.generate_parquet:
-        generate_parquet(output_dir, dataset_version=args.dataset_version)
+        _generate_parquet(args, output_dir)
+        return True
+
+    if args.generate_stac:
+        _generate_stac(args, output_dir)
         return True
 
     if args.push_to_hub is not None:
         _require_repo_id(args.push_to_hub, "--push-to-hub")
-        push_to_hub(output_dir, args.push_to_hub, dataset_version=args.dataset_version)
+        push_to_hub(
+            output_dir,
+            args.push_to_hub,
+            dataset_version=args.dataset_version,
+            negative_ratio=args.negative_ratio,
+            card_text=args.card_text,
+        )
+        return True
+
+    if args.publish_stac:
+        if not args.card_text or not args.fair_settings:
+            logger.error("--publish-stac needs a config with card and fair sections")
+            sys.exit(2)
+        publish_to_fair(
+            output_dir,
+            args.publish_stac,
+            args.card_text,
+            args.fair_settings,
+            args.dataset_version,
+        )
         return True
 
     if args.push_raw is not None:
@@ -279,7 +449,13 @@ def main(argv: list[str] | None = None):
     if _run_standalone_command(args, output_dir):
         return
 
-    spec = resolve_feature_spec(args.feature_type, args.tm_mapping_type, args.geometry_types)
+    spec = resolve_feature_spec(
+        args.feature_type,
+        args.tm_mapping_type,
+        args.geometry_types,
+        args.tag_values,
+        args.require_tags,
+    )
     logger.info(
         "Feature type '%s' -> TM mapping type %s, geometry %s",
         spec.osm_tag,
@@ -307,10 +483,17 @@ def main(argv: list[str] | None = None):
         label_buffer_meters=args.label_buffer_meters,
         tm_mapping_type=args.tm_mapping_type,
         geometry_types=args.geometry_types,
+        tag_values=args.tag_values,
+        required_tags=args.require_tags,
     )
     failed_project_ids = build_all_projects(projects, config, dataset_version=args.dataset_version)
     if failed_project_ids:
         sys.exit(1)
+
+    if args.all:
+        generate_splits(output_dir, args.split_settings)
+        _generate_parquet(args, output_dir)
+        _generate_stac(args, output_dir)
 
 
 def _truncate(text: str, max_length: int) -> str:

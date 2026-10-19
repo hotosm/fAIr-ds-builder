@@ -4,202 +4,207 @@ import pytest
 
 from hot_oam_dataset.split_generator import (
     SPLIT_NAMES,
-    SPLIT_TEST,
-    SPLIT_TRAIN,
-    SPLIT_VALIDATION,
-    ProjectCluster,
-    assign_splits,
-    build_clusters,
-    compute_split_stats,
+    SplitSettings,
+    _buffer_exclusions,
+    collect_tiles,
     generate_splits,
     load_splits,
+    tile_footprints,
 )
 
-
-def _write_stats(path, projects):
-    path.write_text(json.dumps({"projects": projects}))
+EQUATOR_X, EQUATOR_Y = 262144, 262144
 
 
-def _write_summary(path, projects):
-    path.write_text(json.dumps(projects))
-
-
-@pytest.fixture
-def dataset_dir(tmp_path):
-    return tmp_path
-
-
-def test_assign_splits_single_large_cluster():
-    clusters = [
-        ProjectCluster(imagery_url="url_a", project_ids=[1, 2, 3], total_tiles=8000),
-        ProjectCluster(imagery_url="url_b", project_ids=[4], total_tiles=1000),
-        ProjectCluster(imagery_url="url_c", project_ids=[5], total_tiles=1000),
-    ]
-    assignments = assign_splits(clusters)
-
-    assert assignments[1] == SPLIT_TRAIN
-    assert assignments[2] == SPLIT_TRAIN
-    assert assignments[3] == SPLIT_TRAIN
-    assert assignments[4] != SPLIT_TRAIN
-    assert assignments[5] != SPLIT_TRAIN
-    assert assignments[4] != assignments[5]
-
-
-def test_assign_splits_all_projects_assigned():
-    clusters = [
-        ProjectCluster(imagery_url=f"url_{i}", project_ids=[i], total_tiles=100) for i in range(10)
-    ]
-    assignments = assign_splits(clusters)
-
-    assert len(assignments) == 10
-    assert all(s in SPLIT_NAMES for s in assignments.values())
-
-
-def test_assign_splits_empty():
-    assert assign_splits([]) == {}
-
-
-def test_shared_imagery_url_stays_together(dataset_dir):
-    _write_stats(
-        dataset_dir / "dataset_stats.json",
-        [
-            {"project_id": 1, "valid_pairs": 500},
-            {"project_id": 2, "valid_pairs": 500},
-            {"project_id": 3, "valid_pairs": 200},
-        ],
-    )
-    _write_summary(
-        dataset_dir / "projects_summary.json",
-        [
-            {"project_id": 1, "imagery_url": "https://oam.org/shared"},
-            {"project_id": 2, "imagery_url": "https://oam.org/shared"},
-            {"project_id": 3, "imagery_url": "https://oam.org/unique"},
-        ],
+def _write_project(dataset_dir, project_id, tiles, features_by_tile=None):
+    project_dir = dataset_dir / f"project_{project_id}"
+    (project_dir / "labels").mkdir(parents=True)
+    (project_dir / "metadata.json").write_text(json.dumps({"project_id": project_id}))
+    for x, y in tiles:
+        features = [
+            {"type": "Feature", "geometry": None, "properties": {"osm_type": "ways", "osm_id": i}}
+            for i in (features_by_tile or {}).get((x, y), [])
+        ]
+        (project_dir / "labels" / f"OAM-{x}-{y}-19.geojson").write_text(
+            json.dumps({"type": "FeatureCollection", "features": features})
+        )
+    (project_dir / "labels" / "osm-result.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": []})
     )
 
-    clusters = build_clusters(dataset_dir)
 
-    shared_cluster = next(c for c in clusters if len(c.project_ids) == 2)
-    assert set(shared_cluster.project_ids) == {1, 2}
-    assert shared_cluster.total_tiles == 1000
-
-
-def test_generate_and_load_roundtrip(dataset_dir):
-    _write_stats(
-        dataset_dir / "dataset_stats.json",
-        [{"project_id": i, "valid_pairs": 100} for i in range(1, 11)],
-    )
-    _write_summary(
-        dataset_dir / "projects_summary.json",
-        [{"project_id": i, "imagery_url": f"https://oam.org/{i}"} for i in range(1, 11)],
-    )
-
-    assignments = generate_splits(dataset_dir)
-    loaded = load_splits(dataset_dir)
-
-    assert assignments == loaded
-    assert len(loaded) == 10
+def _splits(dataset_dir, settings):
+    splits = generate_splits(dataset_dir, settings)
+    assert splits is not None
+    return splits
 
 
-def test_load_splits_missing_file(dataset_dir):
-    assert load_splits(dataset_dir) == {}
+def _grid(x0, y0, width, height):
+    return [(x0 + dx, y0 + dy) for dx in range(width) for dy in range(height)]
 
 
-def test_split_ratios_approximate():
-    clusters = [
-        ProjectCluster(imagery_url=f"url_{i}", project_ids=[i], total_tiles=100) for i in range(100)
-    ]
-    assignments = assign_splits(clusters)
-
-    total = 10000
-    train_tiles = sum(100 for pid, s in assignments.items() if s == SPLIT_TRAIN)
-    val_tiles = sum(100 for pid, s in assignments.items() if s == SPLIT_VALIDATION)
-    test_tiles = sum(100 for pid, s in assignments.items() if s == SPLIT_TEST)
-
-    assert 0.70 * total <= train_tiles <= 0.90 * total
-    assert 0.05 * total <= val_tiles <= 0.20 * total
-    assert 0.05 * total <= test_tiles <= 0.20 * total
+def _split_of_cells(splits):
+    return {
+        tuple(int(part) for part in tile_id.split("-")[1:3]): name
+        for tile_id, name in splits.tiles.items()
+    }
 
 
-def test_dominant_cluster_forced_to_train():
-    clusters = [
-        ProjectCluster(imagery_url="dominant", project_ids=[1], total_tiles=6000),
-        ProjectCluster(imagery_url="url_a", project_ids=[2], total_tiles=500),
-        ProjectCluster(imagery_url="url_b", project_ids=[3], total_tiles=500),
-        ProjectCluster(imagery_url="url_c", project_ids=[4], total_tiles=500),
-        ProjectCluster(imagery_url="url_d", project_ids=[5], total_tiles=500),
-    ]
-    assignments = assign_splits(clusters)
-
-    assert assignments[1] == SPLIT_TRAIN
-
-
-def test_build_clusters_excludes_projects_without_stats(dataset_dir):
-    _write_stats(
-        dataset_dir / "dataset_stats.json",
-        [{"project_id": 1, "valid_pairs": 100}],
-    )
-    _write_summary(
-        dataset_dir / "projects_summary.json",
-        [
-            {"project_id": 1, "imagery_url": "https://oam.org/1"},
-            {"project_id": 99, "imagery_url": "https://oam.org/99"},
-        ],
-    )
-
-    clusters = build_clusters(dataset_dir)
-    all_pids = [pid for c in clusters for pid in c.project_ids]
-
-    assert 1 in all_pids
-    assert 99 not in all_pids
+def _is_connected(cells):
+    cells = set(cells)
+    seen, frontier = set(), [next(iter(cells))]
+    while frontier:
+        x, y = frontier.pop()
+        if (x, y) in seen:
+            continue
+        seen.add((x, y))
+        frontier.extend(n for n in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)) if n in cells)
+    return seen == cells
 
 
-def test_compute_split_stats_includes_features_and_countries(dataset_dir):
-    _write_stats(
-        dataset_dir / "dataset_stats.json",
-        [
-            {
-                "project_id": 1,
-                "valid_pairs": 800,
-                "total_label_features": 5000,
-                "country": "Kenya",
-            },
-            {
-                "project_id": 2,
-                "valid_pairs": 100,
-                "total_label_features": 600,
-                "country": "Peru",
-            },
-            {
-                "project_id": 3,
-                "valid_pairs": 100,
-                "total_label_features": 400,
-                "country": "Ghana",
-            },
-        ],
-    )
-    _write_summary(
-        dataset_dir / "projects_summary.json",
-        [
-            {"project_id": 1, "imagery_url": "https://oam.org/1"},
-            {"project_id": 2, "imagery_url": "https://oam.org/2"},
-            {"project_id": 3, "imagery_url": "https://oam.org/3"},
-        ],
-    )
+def test_collect_tiles_ignores_the_whole_area_label(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 2, 2))
 
-    generate_splits(dataset_dir)
-    stats = compute_split_stats(dataset_dir)
+    tiles = collect_tiles(tmp_path)
 
-    assert stats is not None
-    total_features = sum(s["features"] for s in stats.values())
-    assert total_features == 6000
-
-    for split_name in SPLIT_NAMES:
-        info = stats[split_name]
-        assert "features" in info
-        assert "countries" in info
-        assert isinstance(info["countries"], list)
+    assert len(tiles) == 4
+    assert all(t.tile_id.startswith("OAM-") for t in tiles)
 
 
-def test_compute_split_stats_returns_none_without_splits(dataset_dir):
-    assert compute_split_stats(dataset_dir) is None
+def test_default_split_keeps_every_tile_and_holds_out_contiguous_regions(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 40, 40))
+
+    splits = _splits(tmp_path, SplitSettings())
+
+    cells = _split_of_cells(splits)
+    assert len(cells) == 1600
+    assert splits.excluded == {}
+    for held_out in ("validation", "test"):
+        region = [cell for cell, name in cells.items() if name == held_out]
+        assert 80 <= len(region) <= 240
+        assert _is_connected(region)
+
+
+def test_every_project_spans_all_splits(tmp_path):
+    for project_id, offset in enumerate([0, 1000, 2000], start=1):
+        _write_project(tmp_path, project_id, _grid(EQUATOR_X + offset, EQUATOR_Y, 20, 20))
+
+    splits = _splits(tmp_path, SplitSettings())
+
+    per_project = {}
+    for tile in collect_tiles(tmp_path):
+        per_project.setdefault(tile.project_id, set()).add(splits.split_for(tile.tile_id))
+    assert all(names == set(SPLIT_NAMES) for names in per_project.values())
+
+
+def test_project_smaller_than_the_region_count_goes_to_train(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 3, 3))
+
+    splits = _splits(tmp_path, SplitSettings())
+
+    assert set(splits.tiles.values()) == {"train"}
+
+
+def test_buffer_leaves_out_tiles_near_a_higher_ranked_split(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 40, 40))
+
+    splits = _splits(tmp_path, SplitSettings(buffer_meters=100))
+
+    footprints = tile_footprints(collect_tiles(tmp_path)).set_index("tile_id")
+    kept = footprints.loc[list(splits.tiles)]
+    kept["split"] = [splits.tiles[tile_id] for tile_id in kept.index]
+    for stronger, weaker in (("test", "validation"), ("test", "train"), ("validation", "train")):
+        distances = kept[kept["split"] == weaker].distance(
+            kept[kept["split"] == stronger].union_all()
+        )
+        assert distances.min() > 100
+    assert set(splits.excluded.values()) == {"buffer"}
+    assert len(splits.tiles) + len(splits.excluded) == 1600
+
+
+def test_shared_feature_rule_keeps_each_feature_in_one_split(tmp_path):
+    tiles = _grid(EQUATOR_X, EQUATOR_Y, 40, 40)
+    road_across_project = {(x, EQUATOR_Y + 20): [7] for x in range(EQUATOR_X, EQUATOR_X + 40)}
+    _write_project(tmp_path, 1, tiles, road_across_project)
+
+    without_rule = _splits(tmp_path, SplitSettings())
+    with_rule = _splits(tmp_path, SplitSettings(exclude_shared_features=True))
+
+    road_tiles = {f"OAM-{x}-{y}-19" for x, y in road_across_project}
+    assert len({without_rule.tiles[t] for t in road_tiles}) > 1
+    assert len({with_rule.tiles[t] for t in road_tiles if t in with_rule.tiles}) == 1
+    assert set(with_rule.excluded.values()) == {"shared_feature"}
+
+
+def test_assignment_is_deterministic(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 24, 24))
+
+    assert _splits(tmp_path, SplitSettings()).tiles == (_splits(tmp_path, SplitSettings()).tiles)
+
+
+def test_splits_round_trip(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 24, 24))
+    written = _splits(tmp_path, SplitSettings(buffer_meters=50))
+
+    loaded = load_splits(tmp_path)
+
+    assert loaded is not None
+    assert loaded.settings == written.settings
+    assert loaded.tiles == written.tiles
+    assert loaded.excluded == written.excluded
+
+
+def test_load_splits_rejects_the_older_block_format(tmp_path):
+    (tmp_path / "splits.json").write_text(json.dumps({"block_size": 8, "blocks": {}}))
+
+    with pytest.raises(ValueError, match="rerun --generate-splits"):
+        load_splits(tmp_path)
+
+
+def test_load_splits_missing_file(tmp_path):
+    assert load_splits(tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        ({"block_size": 8}, "unknown split settings"),
+        ({"regions_per_project": 2}, "must exceed"),
+        ({"test_regions": 0}, "at least one"),
+        ({"buffer_meters": -1}, "must not be negative"),
+        ({"exclude_shared_features": "yes"}, "true or false"),
+    ],
+)
+def test_invalid_split_settings_are_rejected(mapping, message):
+    with pytest.raises(ValueError, match=message):
+        SplitSettings.from_mapping(mapping)
+
+
+def test_a_feature_shared_by_test_and_validation_stays_in_test(tmp_path):
+    _write_project(tmp_path, 1, _grid(EQUATOR_X, EQUATOR_Y, 40, 40))
+    plain = _split_of_cells(_splits(tmp_path, SplitSettings()))
+    test_cell = next(cell for cell, name in plain.items() if name == "test")
+    validation_cell = next(cell for cell, name in plain.items() if name == "validation")
+    feature = {"type": "Feature", "geometry": None, "properties": {"osm_type": "ways", "osm_id": 7}}
+    for x, y in (test_cell, validation_cell):
+        label = tmp_path / "project_1" / "labels" / f"OAM-{x}-{y}-19.geojson"
+        label.write_text(json.dumps({"type": "FeatureCollection", "features": [feature]}))
+
+    ruled = _splits(tmp_path, SplitSettings(exclude_shared_features=True))
+
+    x, y = validation_cell
+    assert ruled.excluded == {f"OAM-{x}-{y}-19": "shared_feature"}
+    assert _split_of_cells(ruled)[test_cell] == "test"
+
+
+def test_tiles_left_out_by_the_buffer_do_not_push_the_buffer_further(tmp_path):
+    row = [(EQUATOR_X + dx, EQUATOR_Y) for dx in range(10)]
+    _write_project(tmp_path, 1, row)
+    tiles = collect_tiles(tmp_path)
+    names = ["test"] * 3 + ["validation"] + ["train"] * 6
+    splits = {tile.tile_id: name for tile, name in zip(tiles, names, strict=True)}
+
+    excluded = _buffer_exclusions(tiles, splits, buffer_meters=100)
+
+    # One tile is about 76 m wide at zoom 19, so only the validation tile and the first train tile
+    # lie within 100 m of a test tile; the next train tile is close only to the dropped validation
+    assert excluded == {tiles[3].tile_id, tiles[4].tile_id}

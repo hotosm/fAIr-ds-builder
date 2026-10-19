@@ -1,0 +1,38 @@
+output_dir: fAIr-guru-td-buildings
+project_ids: 40695,50793
+feature_type: building
+zoom: 19
+burn_binary_masks: true
+dataset_version: 0.3.2
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-buildings
+  title: 'fAIr Open Mapping Gurus: buildings'
+  label_noun: buildings
+  tasks: [segmentation]
+  summary: >-
+    Building segmentation training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme. Drone and aerial imagery from OpenAerialMap is paired with OpenStreetMap building
+    footprints mapped and validated in HOT Tasking Manager projects.
+  selection: >-
+    Projects are complete (`ARCHIVED` in Tasking Manager) and list `BUILDINGS` among their mapping
+    types. Tiles come only from task squares marked `VALIDATED`, clipped to the project area of
+    interest. Labels are every OpenStreetMap feature tagged `building=*`, any value, intersecting
+    a tile. Masks are binary rasters of the footprints.
+  limitations:
+  - >-
+    Some buildings visible in a chip are unlabelled: they were missing from OpenStreetMap at
+    extraction, or were built after the mapping.
+  - >-
+    Imagery and labels can differ in date, so some footprints no longer match the ground.
+  - >-
+    A few buildings carry a colour code such as `#b49f6a` as their `building` value, a mapping
+    error kept as mapped.

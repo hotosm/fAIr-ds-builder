@@ -1,0 +1,45 @@
+output_dir: fAIr-guru-td-road-surface
+project_ids: 40695,50793
+feature_type: surface
+require_tags: [highway]
+geometry_types: [line]
+tm_mapping_type: ROADS
+zoom: 19
+burn_binary_masks: false
+dataset_version: 0.1.2
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-road-surface
+  title: 'fAIr Open Mapping Gurus: road surface'
+  label_noun: roads
+  tasks: [segmentation, classification]
+  summary: >-
+    Road surface training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme. Drone and aerial imagery from OpenAerialMap is paired with OpenStreetMap roads
+    and paths that carry a surface type, mapped and validated in HOT Tasking Manager projects.
+  selection: >-
+    Projects are complete (`ARCHIVED` in Tasking Manager) and list `ROADS` among their mapping
+    types. Tiles come only from task squares marked `VALIDATED`, clipped to the project area of
+    interest. Labels are every OpenStreetMap line tagged both `highway=*` and `surface=*` intersecting
+    a tile. A label's class is `tags["surface"]` in `label_geojson`, the `class` column in the
+    STAC labels, and its `highway` value and other tags are kept. The tiles and splits match the
+    highways dataset of the same programme.
+
+
+    Labels are centrelines in `label_geojson`, and the `mask` column is empty; buffer the lines
+    to build masks.
+  limitations:
+  - >-
+    Values are published as mapped. General values (`unpaved`, `paved`) sit alongside specific
+    ones (`dirt`, `ground`, `compacted`, `asphalt`); group them to suit the model.
+  - Only roads tagged with `surface` are labelled.
+  - >-
+    Labels are centrelines, and road width varies from footpaths to primary roads.

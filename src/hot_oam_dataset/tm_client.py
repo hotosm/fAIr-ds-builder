@@ -1,10 +1,14 @@
 import json
 import logging
+import os
+import re
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+from shapely import union_all
+from shapely.geometry import mapping, shape
 
 from hot_oam_dataset.feature_spec import DEFAULT_FEATURE_TYPE, KNOWN_FEATURE_SPECS
 
@@ -12,10 +16,47 @@ logger = logging.getLogger(__name__)
 
 TM_API_BASE = "https://tasking-manager-production-api.hotosm.org"
 PROJECTS_ENDPOINT = "/api/v2/projects/"
-OAM_DOMAIN = "openaerialmap.org"
+OAM_IMAGERY_MARKERS = (
+    "openaerialmap.org",
+    "api.imagery.hotosm.org/raster/collections/openaerialmap/",
+)
+TM_TOKEN_ENV = "TM_TOKEN"
+TOKEN_SCHEME = "Token"
+VALIDATED_TASK_STATUS = "VALIDATED"
 MINIMUM_VALIDATION_PERCENT = 95
 PROJECT_STATUSES = ("PUBLISHED", "ARCHIVED")
 DEFAULT_MAPPING_TYPE = KNOWN_FEATURE_SPECS[DEFAULT_FEATURE_TYPE].tm_mapping_type
+IMAGERY_PREFIX_PATTERN = re.compile(r"^[a-zA-Z]+\s*(\[\d+\])?:(?=https?://)")
+
+
+def normalize_imagery_url(imagery: str) -> str:
+    """Strip the editor prefix TM stores on some layers, such as tms[22]:https://..."""
+    return IMAGERY_PREFIX_PATTERN.sub("", imagery or "")
+
+
+def read_tm_token() -> str | None:
+    """Read the TM session token, accepting it with or without the leading 'Token ' scheme."""
+    value = os.getenv(TM_TOKEN_ENV, "").strip()
+    return value.removeprefix(f"{TOKEN_SCHEME} ").strip() or None
+
+
+def validated_task_area(detail: dict) -> tuple[dict, int, int]:
+    """Union VALIDATED task squares clipped to the AOI, since squares extend past it."""
+    tasks = detail["tasks"]["features"]
+    validated = [
+        task for task in tasks if task["properties"].get("taskStatus") == VALIDATED_TASK_STATUS
+    ]
+    if not validated:
+        return {}, 0, len(tasks)
+    union = union_all([shape(task["geometry"]) for task in validated])
+    clipped = union.intersection(shape(detail["areaOfInterest"]))
+    if clipped.area == 0:
+        return {}, 0, len(tasks)
+    return mapping(clipped), len(validated), len(tasks)
+
+
+class PrivateProjectError(PermissionError):
+    """Raised when TM refuses a project because it is private to the caller."""
 
 
 @dataclass
@@ -27,6 +68,9 @@ class TaskingManagerProject:
     percent_validated: int
     imagery_url: str
     area_of_interest: dict
+    validated_area: dict
+    validated_task_count: int
+    total_task_count: int
     bbox: list[float]
     mapping_types: list[str]
     organisation: str
@@ -38,10 +82,12 @@ class TaskingManagerProject:
 class TaskingManagerClient:
     base_url: str = TM_API_BASE
     timeout: int = 30
+    token: str | None = field(default_factory=read_tm_token, repr=False)
     _client: httpx.Client = field(init=False, repr=False)
 
     def __post_init__(self):
-        self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
+        headers = {"Authorization": f"{TOKEN_SCHEME} {self.token}"} if self.token else {}
+        self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout, headers=headers)
 
     def close(self):
         self._client.close()
@@ -52,18 +98,17 @@ class TaskingManagerClient:
     def __exit__(self, *args):
         self.close()
 
-    def iter_custom_imagery_project_ids(
+    def iter_projects(
         self,
         mapping_type: str | None = None,
         created_from: str | None = None,
         created_to: str | None = None,
-    ) -> Generator[int, None, None]:
-        """Yield custom-imagery project ids, across every mapping type when none is given."""
+    ) -> Generator[dict, None, None]:
+        """Yield project list entries, across every mapping type when none is given."""
         for status in PROJECT_STATUSES:
             page = 1
             while True:
                 params = {
-                    "imagery": "custom",
                     "omitMapResults": "true",
                     "projectStatuses": status,
                     "page": str(page),
@@ -84,8 +129,7 @@ class TaskingManagerClient:
                 if not results:
                     break
 
-                for project in results:
-                    yield project["projectId"]
+                yield from results
 
                 total_pages = data.get("pagination", {}).get("pages", 1)
                 if page >= total_pages:
@@ -94,18 +138,24 @@ class TaskingManagerClient:
 
     def fetch_project_summary(self, project_id: int) -> dict:
         endpoint = f"{PROJECTS_ENDPOINT}{project_id}/queries/summary/"
-        response = self._client.get(endpoint)
-        response.raise_for_status()
-        return response.json()
+        return self._get_project_json(project_id, endpoint)
 
     def fetch_project_full(self, project_id: int) -> dict:
-        response = self._client.get(f"{PROJECTS_ENDPOINT}{project_id}/")
+        return self._get_project_json(project_id, f"{PROJECTS_ENDPOINT}{project_id}/")
+
+    def _get_project_json(self, project_id: int, endpoint: str) -> dict:
+        response = self._client.get(endpoint)
+        if response.status_code == httpx.codes.FORBIDDEN:
+            raise PrivateProjectError(
+                f"TM refused project {project_id} (403). If it is private, set {TM_TOKEN_ENV} "
+                f"to a TM session token with access to it ({response.text})"
+            )
         response.raise_for_status()
         return response.json()
 
     def is_oam_project(self, project_detail: dict) -> bool:
         imagery = project_detail.get("imagery", "") or ""
-        return OAM_DOMAIN in imagery
+        return any(marker in imagery for marker in OAM_IMAGERY_MARKERS)
 
     def is_validated_project(self, project_detail: dict, mapping_type: str) -> bool:
         percent_validated = project_detail.get("percentValidated", 0)
@@ -114,14 +164,19 @@ class TaskingManagerClient:
 
     def build_project_record(self, detail: dict) -> TaskingManagerProject:
         country_tags = detail.get("countryTag", [])
+        project_info = detail.get("projectInfo") or {}
+        validated_area, validated_task_count, total_task_count = validated_task_area(detail)
         return TaskingManagerProject(
             project_id=detail["projectId"],
-            name=detail.get("projectInfo", {}).get("name", ""),
+            name=project_info.get("name", "").strip(),
             status=detail.get("status", ""),
             percent_mapped=detail.get("percentMapped", 0),
             percent_validated=detail.get("percentValidated", 0),
-            imagery_url=detail.get("imagery", ""),
+            imagery_url=normalize_imagery_url(detail.get("imagery", "")),
             area_of_interest=detail.get("areaOfInterest", {}),
+            validated_area=validated_area,
+            validated_task_count=validated_task_count,
+            total_task_count=total_task_count,
             bbox=detail.get("aoiBBOX", []),
             mapping_types=detail.get("mappingTypes", []),
             organisation=detail.get("organisationName", ""),
@@ -160,12 +215,17 @@ def fetch_projects_by_ids(
                 )
 
             project = client.build_project_record(detail)
+            if not project.validated_task_count:
+                logger.warning("Project %d has no validated tasks, skipping", pid)
+                continue
             projects.append(project)
             logger.info(
-                "Loaded hand-picked #%d %s (%s)",
+                "Loaded hand-picked #%d %s (%s), %d of %d tasks validated",
                 project.project_id,
                 project.name,
                 project.country,
+                project.validated_task_count,
+                project.total_task_count,
             )
 
         logger.info("Hand-picked projects loaded: %d", len(projects))
@@ -183,22 +243,34 @@ def discover_oam_projects(
     output_path: Path | None = None,
     limit: int | None = None,
 ) -> list[TaskingManagerProject]:
+    """Discover validated OAM projects, narrowing on the cheapest field available first."""
+    projects: list[TaskingManagerProject] = []
+    seen = under_validated = not_oam = 0
+
     with TaskingManagerClient() as client:
-        project_id_iter = client.iter_custom_imagery_project_ids(
+        for entry in client.iter_projects(
             mapping_type=mapping_type,
             created_from=created_from,
             created_to=created_to,
-        )
-
-        projects = []
-        for pid in project_id_iter:
+        ):
             if limit and len(projects) >= limit:
                 break
 
+            seen += 1
+            pid = entry["projectId"]
+
+            if entry.get("percentValidated", 0) < MINIMUM_VALIDATION_PERCENT:
+                under_validated += 1
+                continue
+
             try:
                 summary = client.fetch_project_summary(pid)
-            except httpx.HTTPStatusError as exc:
+            except (httpx.HTTPStatusError, PrivateProjectError) as exc:
                 logger.warning("Failed to fetch summary for project %d: %s", pid, exc)
+                continue
+
+            if not client.is_oam_project(summary):
+                not_oam += 1
                 continue
 
             if not client.is_validated_project(summary, mapping_type):
@@ -207,15 +279,14 @@ def discover_oam_projects(
 
             try:
                 detail = client.fetch_project_full(pid)
-            except httpx.HTTPStatusError as exc:
+            except (httpx.HTTPStatusError, PrivateProjectError) as exc:
                 logger.warning("Failed to fetch detail for project %d: %s", pid, exc)
                 continue
 
-            if not client.is_oam_project(detail):
-                logger.debug("Project %d not using OAM imagery, skipping", pid)
-                continue
-
             project = client.build_project_record(detail)
+            if not project.validated_task_count:
+                logger.warning("Project %d has no validated tasks, skipping", pid)
+                continue
             projects.append(project)
             logger.info(
                 "Discovered #%d %s (%s)",
@@ -224,7 +295,15 @@ def discover_oam_projects(
                 project.country,
             )
 
-        logger.info("Total validated OAM %s projects: %d", mapping_type, len(projects))
+        logger.info(
+            "Scanned %d %s projects: %d below %d%% validation, %d not OAM, %d kept",
+            seen,
+            mapping_type,
+            under_validated,
+            MINIMUM_VALIDATION_PERCENT,
+            not_oam,
+            len(projects),
+        )
 
         if output_path:
             save_discovery_outputs(projects, output_path)
@@ -238,6 +317,8 @@ def _summary_record(project: TaskingManagerProject) -> dict:
         "name": project.name,
         "status": project.status,
         "percent_validated": project.percent_validated,
+        "validated_task_count": project.validated_task_count,
+        "total_task_count": project.total_task_count,
         "imagery_url": project.imagery_url,
         "organisation": project.organisation,
         "country": project.country,

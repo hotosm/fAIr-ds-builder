@@ -1,0 +1,50 @@
+output_dir: fAIr-guru-td-trees
+project_ids: 50661
+feature_type: natural
+tag_values: [tree, tree_group]
+geometry_types: [point, polygon]
+zoom: 20
+burn_binary_masks: false
+dataset_version: 0.1.0
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-trees
+  title: 'fAIr Open Mapping Gurus: trees'
+  label_noun: trees
+  tasks: [detection]
+  summary: >-
+    Tree training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme, built from a Freetown, Sierra Leone project that mapped trees to generate AI training
+    data. Drone imagery from OpenAerialMap is paired with OpenStreetMap trees mapped and validated
+    in HOT Tasking Manager.
+  selection: >-
+    The project lists `OTHER` as its mapping type and instructed mappers to map isolated trees
+    as points tagged `natural=tree`, with an estimated crown diameter in `diameter_crown`, and
+    dense or overlapping trees as polygons tagged `natural=tree_group`. Tiles come only from task
+    squares marked `VALIDATED`. Labels are every OpenStreetMap feature with `natural=tree` or
+    `natural=tree_group` intersecting a tile.
+
+
+    Labels are published as mapped, points and polygons in `label_geojson`, and the `mask` column
+    is empty, so users can build masks to suit their model, for example by buffering points with
+    `diameter_crown`.
+  limitations:
+  - >-
+    `diameter_crown` is a mapper estimate. Of the trees mapped in the project area, about 57%
+    give it with a unit in varying formats (`3m`, `2.412m`, `3.234 m`, `3,134 m`), 38% as a bare
+    number and 4% leave it out, and many values repeat exactly, so it gives an approximate crown
+    size.
+  - >-
+    Some mappers marked shrubs and small plants as trees; the project instructions ask for trees
+    only.
+  - >-
+    A tree group crossing a tile edge appears in each tile it touches, so label counts are per
+    tile.

@@ -33,11 +33,11 @@ def collect_rows(client: TaskingManagerClient) -> tuple[list[dict], int]:
     rows = []
     skipped = 0
 
-    for index, project_id in enumerate(client.iter_custom_imagery_project_ids(), 1):
+    for index, entry in enumerate(client.iter_projects(), 1):
         try:
-            detail = client.fetch_project_full(project_id)
+            detail = client.fetch_project_full(entry["projectId"])
         except httpx.HTTPError as exc:
-            print(f"  Skipping project {project_id}: {exc}")
+            print(f"  Skipping project {entry['projectId']}: {exc}")
             skipped += 1
             continue
 
@@ -52,7 +52,7 @@ def collect_rows(client: TaskingManagerClient) -> tuple[list[dict], int]:
 def print_summary(frame: pd.DataFrame, oam: pd.DataFrame, skipped: int) -> None:
     print(f"\n{'=' * 60}")
     print(f"Skipped (detail fetch failed): {skipped}")
-    print(f"Total custom imagery projects: {len(frame)}")
+    print(f"Total projects: {len(frame)}")
     print(f"OAM projects: {len(oam)}")
 
     print("\n--- OAM project breakdown ---")
@@ -78,7 +78,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     with TaskingManagerClient() as client:
-        print("Fetching custom imagery projects...")
+        print("Fetching projects...")
         rows, skipped = collect_rows(client)
 
     frame = pd.DataFrame(rows)

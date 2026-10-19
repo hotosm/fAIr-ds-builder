@@ -11,11 +11,17 @@ from pathlib import Path
 
 import geopandas as gpd
 import httpx
+import rasterio
 from geomltoolkits.downloader import osm as osm_downloader
 from geomltoolkits.downloader import tms as tms_downloader
 from geomltoolkits.raster.burn import burn_labels
 
-from hot_oam_dataset.feature_spec import DEFAULT_FEATURE_TYPE, FeatureSpec, resolve_feature_spec
+from hot_oam_dataset.feature_spec import (
+    DEFAULT_FEATURE_TYPE,
+    FeatureSpec,
+    label_class_counts,
+    resolve_feature_spec,
+)
 from hot_oam_dataset.tm_client import TaskingManagerProject
 
 logger = logging.getLogger(__name__)
@@ -23,10 +29,17 @@ logger = logging.getLogger(__name__)
 TILE_ZOOM = 19
 TILE_PREFIX = "OAM"
 TILE_SIZE_PIXELS = 256
+TM_PROJECT_URL_BASE = "https://tasks.hotosm.org/projects/"
 MINIMUM_VALID_CHIP_BYTES = 5000
+# Below this share, transparent pixels are speckles in dark shadows or single edge pixels
+MAX_MISSING_IMAGERY_SHARE = 0.01
 PROBE_MAX_RETRIES = 3
 PROBE_TIMEOUT = 15
 PROBE_BACKOFF_BASE = 2
+# Raw Data API rows can carry the edit attributes of the OSM import inside tags; live OSM has none
+IMPORT_ATTRIBUTE_TAGS = frozenset(
+    {"osm_uid", "osm_user", "osm_version", "osm_changeset", "osm_timestamp"}
+)
 
 
 @dataclass
@@ -41,10 +54,18 @@ class DatasetConfig:
     label_buffer_meters: float = 0.0
     tm_mapping_type: str | None = None
     geometry_types: list[str] | None = None
+    tag_values: list[str] | None = None
+    required_tags: list[str] | None = None
 
     @property
     def feature_spec(self) -> FeatureSpec:
-        return resolve_feature_spec(self.feature_type, self.tm_mapping_type, self.geometry_types)
+        return resolve_feature_spec(
+            self.feature_type,
+            self.tm_mapping_type,
+            self.geometry_types,
+            self.tag_values,
+            self.required_tags,
+        )
 
 
 def _lon_lat_to_tile(lon: float, lat: float, zoom: int) -> tuple[int, int]:
@@ -118,7 +139,7 @@ def build_project_dataset(project: TaskingManagerProject, config: DatasetConfig)
             {
                 "type": "Feature",
                 "properties": {"project_id": project.project_id},
-                "geometry": project.area_of_interest,
+                "geometry": project.validated_area,
             }
         ],
     }
@@ -148,6 +169,7 @@ async def _download_chips_and_labels(
         georeference=config.georeference,
         dump_tile_geometries_as_geojson=True,
         prefix=config.prefix,
+        max_failures=0,
     )
 
     tiles_geojson_path = project_dir / "tiles.geojson"
@@ -170,19 +192,23 @@ async def _download_chips_and_labels(
     await osm_downloader.download_osm_data(
         geojson=str(tiles_geojson_path),
         out=osm_work_dir,
-        feature_type=spec.osm_tag,
+        filters=spec.raw_data_filters(),
         geometry_types=list(spec.geometry_types),
+        use_st_within=False,  # edge tiles otherwise lose partially visible features
         dump_results=True,
         split_output_by_tiles=True,
         split_prefix=config.prefix,
     )
 
     _flatten_label_output(project_dir)
+    remove_import_attribute_tags(project_dir / "labels")
 
     if config.burn_binary_masks:
         _burn_project_binary_masks(project_dir, config)
 
-    stats = validate_and_clean_project(project_dir, config.prefix, project.project_id)
+    stats = validate_and_clean_project(
+        project_dir, config.prefix, project.project_id, config.feature_spec.osm_tag
+    )
     _update_metadata_with_stats(project_dir, stats)
 
     logger.info("Completed project #%d", project.project_id)
@@ -203,6 +229,18 @@ def _flatten_label_output(project_dir: Path):
         osm_result.rename(labels_dir / "osm-result.geojson")
 
     shutil.rmtree(osm_work_dir, ignore_errors=True)
+
+
+def remove_import_attribute_tags(labels_dir: Path):
+    """Drop import attributes from label tags; version, changeset and timestamp stay as fields."""
+    for labels_path in labels_dir.glob("*.geojson"):
+        label_data = json.loads(labels_path.read_text())
+        for feature in label_data["features"]:
+            tags = feature["properties"]["tags"]
+            feature["properties"]["tags"] = {
+                key: value for key, value in tags.items() if key not in IMPORT_ATTRIBUTE_TAGS
+            }
+        labels_path.write_text(json.dumps(label_data))
 
 
 def _write_buffered_labels(labels_path: Path, buffer_meters: float) -> Path:
@@ -249,16 +287,20 @@ def _burn_project_binary_masks(project_dir: Path, config: DatasetConfig):
     logger.info("Generated binary masks in %s", masks_dir)
 
 
+def _delete_chip(chip_path: Path):
+    """Delete a chip with its GDAL sidecar and burned mask."""
+    mask_path = chip_path.parent.parent / "masks" / chip_path.name
+    for path in (chip_path, chip_path.with_suffix(".tif.aux.xml"), mask_path):
+        path.unlink(missing_ok=True)
+
+
 def _remove_corrupt_chips(chips_dir: Path, prefix: str) -> tuple[set[str], int]:
     valid_stems: set[str] = set()
     removed_count = 0
 
     for chip in list(chips_dir.glob(f"{prefix}-*.tif")):
         if chip.stat().st_size < MINIMUM_VALID_CHIP_BYTES:
-            chip.unlink()
-            aux = chip.with_suffix(".tif.aux.xml")
-            if aux.exists():
-                aux.unlink()
+            _delete_chip(chip)
             removed_count += 1
         else:
             valid_stems.add(chip.stem)
@@ -266,16 +308,31 @@ def _remove_corrupt_chips(chips_dir: Path, prefix: str) -> tuple[set[str], int]:
     return valid_stems, removed_count
 
 
+def _has_missing_imagery(chip_path: Path) -> bool:
+    """True when more than MAX_MISSING_IMAGERY_SHARE of pixels are marked transparent."""
+    with rasterio.open(chip_path) as chip:
+        return bool((chip.dataset_mask() == 0).mean() > MAX_MISSING_IMAGERY_SHARE)
+
+
+def _remove_chips_with_missing_imagery(chips_dir: Path, chip_stems: set[str]) -> set[str]:
+    incomplete = {stem for stem in chip_stems if _has_missing_imagery(chips_dir / f"{stem}.tif")}
+    for stem in incomplete:
+        _delete_chip(chips_dir / f"{stem}.tif")
+        (chips_dir.parent / "labels" / f"{stem}.geojson").unlink(missing_ok=True)
+    return incomplete
+
+
 def _remove_orphan_labels(
-    labels_dir: Path, valid_chip_stems: set[str], prefix: str
-) -> tuple[int, int, int, int]:
+    labels_dir: Path, valid_chip_stems: set[str], prefix: str, feature_type: str
+) -> tuple[int, int, int, int, Counter[str]]:
     removed_count = 0
     valid_pairs = 0
     empty_label_pairs = 0
     total_label_features = 0
+    class_counts: Counter[str] = Counter()
 
     if not labels_dir.exists():
-        return removed_count, valid_pairs, empty_label_pairs, total_label_features
+        return removed_count, valid_pairs, empty_label_pairs, total_label_features, class_counts
 
     for label in list(labels_dir.glob(f"{prefix}-*.geojson")):
         if label.stem not in valid_chip_stems:
@@ -286,13 +343,14 @@ def _remove_orphan_labels(
         data = json.loads(label.read_text())
         feature_count = len(data.get("features", []))
         total_label_features += feature_count
+        class_counts.update(label_class_counts(data, feature_type))
 
         if feature_count == 0:
             empty_label_pairs += 1
 
         valid_pairs += 1
 
-    return removed_count, valid_pairs, empty_label_pairs, total_label_features
+    return removed_count, valid_pairs, empty_label_pairs, total_label_features, class_counts
 
 
 def _remove_unpaired_chips(chips_dir: Path, labels_dir: Path, valid_chip_stems: set[str]) -> int:
@@ -303,16 +361,15 @@ def _remove_unpaired_chips(chips_dir: Path, labels_dir: Path, valid_chip_stems: 
         if label_path and not label_path.exists():
             chip_path = chips_dir / f"{stem}.tif"
             if chip_path.exists():
-                chip_path.unlink()
-                aux = chip_path.with_suffix(".tif.aux.xml")
-                if aux.exists():
-                    aux.unlink()
+                _delete_chip(chip_path)
                 removed_count += 1
 
     return removed_count
 
 
-def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) -> dict:
+def validate_and_clean_project(
+    project_dir: Path, prefix: str, project_id: int, feature_type: str = DEFAULT_FEATURE_TYPE
+) -> dict:
     chips_dir = project_dir / "chips"
     labels_dir = project_dir / "labels"
 
@@ -321,8 +378,12 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
     if removed_corrupt:
         logger.info("Project #%d: removed %d corrupt/empty chips", project_id, removed_corrupt)
 
-    removed_orphans, valid_pairs, empty_label_pairs, total_label_features = _remove_orphan_labels(
-        labels_dir, valid_chip_stems, prefix
+    incomplete_stems = _remove_chips_with_missing_imagery(chips_dir, valid_chip_stems)
+    valid_chip_stems -= incomplete_stems
+    removed_missing_imagery = len(incomplete_stems)
+
+    removed_orphans, valid_pairs, empty_label_pairs, total_label_features, class_counts = (
+        _remove_orphan_labels(labels_dir, valid_chip_stems, prefix, feature_type)
     )
 
     removed_unpaired = _remove_unpaired_chips(chips_dir, labels_dir, valid_chip_stems)
@@ -330,7 +391,7 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
     logger.info(
         "Project #%d: %d valid pairs (%d with labels, %d empty), "
         "%d label features, removed %d orphan labels, %d unpaired chips, "
-        "%d corrupt chips",
+        "%d corrupt chips, %d chips with missing imagery",
         project_id,
         valid_pairs,
         valid_pairs - empty_label_pairs,
@@ -339,6 +400,7 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
         removed_orphans,
         removed_unpaired,
         removed_corrupt,
+        removed_missing_imagery,
     )
 
     size_bytes = _compute_directory_size(project_dir, ["chips", "labels"])
@@ -348,10 +410,12 @@ def validate_and_clean_project(project_dir: Path, prefix: str, project_id: int) 
         "pairs_with_features": valid_pairs - empty_label_pairs,
         "pairs_without_features": empty_label_pairs,
         "total_label_features": total_label_features,
+        "class_counts": dict(class_counts.most_common()),
         "size_bytes": size_bytes,
         "removed_orphan_labels": removed_orphans,
         "removed_unpaired_chips": removed_unpaired,
         "removed_corrupt_chips": removed_corrupt,
+        "removed_missing_imagery_chips": removed_missing_imagery,
     }
 
 
@@ -382,6 +446,8 @@ def _save_project_metadata(
         "name": project.name,
         "status": project.status,
         "percent_validated": project.percent_validated,
+        "validated_task_count": project.validated_task_count,
+        "total_task_count": project.total_task_count,
         "imagery_url": project.imagery_url,
         "organisation": project.organisation,
         "country": project.country,
@@ -391,7 +457,10 @@ def _save_project_metadata(
         "feature_type": spec.osm_tag,
         "tm_mapping_type": spec.tm_mapping_type,
         "geometry_types": list(spec.geometry_types),
+        "tag_values": list(spec.tag_values),
+        "required_tags": list(spec.required_tags),
         "tile_prefix": config.prefix,
+        "project_url": f"{TM_PROJECT_URL_BASE}{project.project_id}",
         "zoom": config.zoom,
         "tile_size_pixels": TILE_SIZE_PIXELS,
         "label_buffer_meters": config.label_buffer_meters,
@@ -447,6 +516,10 @@ def _collect_per_project_stats(output_dir: Path) -> list[tuple[dict, dict]]:
         if not stats:
             continue
 
+        if "tag_values" not in metadata:
+            raise ValueError(
+                f"{metadata_path} lacks tag_values; rebuild project {metadata['project_id']}"
+            )
         collected.append((metadata, stats))
 
     return collected
@@ -481,11 +554,13 @@ def _project_report(metadata: dict, stats: dict, area_sq_km: float) -> dict:
         "name": metadata["name"],
         "country": metadata.get("country", "Unknown"),
         "organisation": metadata.get("organisation", ""),
+        "mapping_types": metadata["mapping_types"],
         "feature_type": metadata.get("feature_type", DEFAULT_FEATURE_TYPE),
         "valid_pairs": stats["valid_pairs"],
         "pairs_with_features": stats["pairs_with_features"],
         "pairs_without_features": stats["pairs_without_features"],
         "total_label_features": stats["total_label_features"],
+        "class_counts": stats.get("class_counts", {}),
         "area_sq_km": area_sq_km,
         "size_mb": round(stats.get("size_bytes", 0) / (1024 * 1024), 1),
     }
@@ -526,6 +601,9 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
     total_size_bytes = sum(stats.get("size_bytes", 0) for _, stats in collected)
 
     countries = Counter(r["country"] for r in project_reports)
+    class_counts: Counter[str] = Counter()
+    for report in project_reports:
+        class_counts.update(report.get("class_counts", {}))
     organisations = Counter(metadata.get("organisation", "Unknown") for metadata, _ in collected)
     country_details = _accumulate_country_details(project_reports)
 
@@ -547,7 +625,11 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         ),
         "total_area_sq_km": round(sum(r["area_sq_km"] for r in project_reports), 2),
         "feature_type": _single_or_mixed(feature_types),
+        "tag_values": sorted(
+            {value for metadata, _ in collected for value in metadata["tag_values"]}
+        ),
         "label_noun": label_noun,
+        "class_counts": dict(class_counts.most_common()),
         "tile_size_pixels": _single_or_mixed(
             _distinct_metadata_values(collected, "tile_size_pixels", TILE_SIZE_PIXELS)
         ),
@@ -591,6 +673,12 @@ def _print_dataset_summary(stats: dict):
     print(f"  Tiles without:         {stats['tiles_without_features']:,}")
     print(f"  Label {noun}:".ljust(25) + f"{stats['total_label_features']:,}")
     print(f"  Avg {noun}/tile:".ljust(25) + f"{stats['avg_features_per_tile']}")
+    top_classes = list(stats.get("class_counts", {}).items())[:5]
+    if top_classes:
+        print(
+            "  Top classes:           "
+            + ", ".join(f"{name} {count:,}" for name, count in top_classes)
+        )
     tile_px = stats["tile_size_pixels"]
     print(f"  Tile size:             {tile_px}x{tile_px} px")
     print(f"  Zoom level:            {stats['zoom_level']}")

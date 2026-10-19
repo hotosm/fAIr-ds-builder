@@ -1,0 +1,41 @@
+output_dir: fAIr-guru-td-highways
+project_ids: 40695,50793
+feature_type: highway
+zoom: 19
+label_buffer_meters: 3
+burn_binary_masks: true
+dataset_version: 0.3.2
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-highways
+  title: 'fAIr Open Mapping Gurus: highways'
+  label_noun: roads
+  tasks: [segmentation]
+  summary: >-
+    Road segmentation training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme. Drone and aerial imagery from OpenAerialMap is paired with OpenStreetMap roads
+    and paths mapped and validated in HOT Tasking Manager projects.
+  selection: >-
+    Projects are complete (`ARCHIVED` in Tasking Manager) and list `ROADS` among their mapping
+    types. Tiles come only from task squares marked `VALIDATED`, clipped to the project area of
+    interest. Labels are every OpenStreetMap line tagged `highway=*`, any value, intersecting
+    a tile. Masks buffer each line by 3 m on each side, so a road burns as a band about 6 m wide.
+    GeoJSON labels keep the original centrelines.
+  limitations:
+  - >-
+    Both projects asked mappers to connect the existing road network and add missing minor roads
+    such as unclassified roads. Their instructions focus on roads, so some tracks and footpaths
+    visible in the imagery are unlabelled.
+  - >-
+    The 6 m band is wider than footpaths and narrower than wide roads.
+  - >-
+    A road just outside a tile can burn its band into that tile's mask while its label sits only
+    in the neighbouring tile, so a few tiles with `num_features` 0 have road pixels in the mask.

@@ -1,0 +1,49 @@
+output_dir: fAIr-guru-td-roof-type
+project_ids: 40695,50793
+feature_type: roof:material
+geometry_types: [polygon]
+tm_mapping_type: BUILDINGS
+zoom: 19
+burn_binary_masks: false
+dataset_version: 0.1.2
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-roof-type
+  title: 'fAIr Open Mapping Gurus: roof type'
+  label_noun: roofs
+  tasks: [segmentation, classification]
+  summary: >-
+    Roof material training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme. Drone and aerial imagery from OpenAerialMap is paired with OpenStreetMap building
+    footprints that carry a roof material, mapped and validated in HOT Tasking Manager projects.
+  selection: >-
+    Projects are complete (`ARCHIVED` in Tasking Manager) and list `BUILDINGS` among their mapping
+    types. Tiles come only from task squares marked `VALIDATED`, clipped to the project area of
+    interest. Labels are every OpenStreetMap polygon tagged `roof:material=*` intersecting a tile.
+    A label's class is `tags["roof:material"]` in `label_geojson`, the `class` column in the STAC
+    labels, and `roof:colour` and `roof:shape` stay in its tags. The tiles and splits match the
+    buildings dataset of the same programme.
+
+
+    The `mask` column is empty; build class masks from `label_geojson` to suit the model.
+  limitations:
+  - >-
+    Values are published as mapped. Some name the same material, such as `metal`, `metal_sheet`
+    and `metal_sheets`, or `roof_tiles`, `tiles` and `tile`; merge them to suit the model.
+  - >-
+    `roof:colour` mixes colour names such as `grey` and `brown` with hex codes such as `#bbad8e`.
+  - >-
+    Only buildings tagged with `roof:material` are labelled, so other buildings in the imagery
+    appear unlabelled.
+  - >-
+    Some labels are `building:part` features or carry only roof tags.
+  - >-
+    A building crossing a tile edge appears in each tile it touches, so label counts are per tile.

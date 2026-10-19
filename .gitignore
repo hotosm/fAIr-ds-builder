@@ -12,8 +12,13 @@ wheels/
 # Dataset build output
 dataset/
 *-dataset/
+fAIr-guru-*/
+vhr-*/
 
 .claude/
 .env
 oam_projects.csv
 soul.md
+
+# Documentation site build output
+site/

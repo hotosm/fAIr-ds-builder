@@ -1,8 +1,15 @@
 import json
 import logging
-from collections import defaultdict
-from dataclasses import dataclass
+import re
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
+
+import geopandas as gpd
+import mercantile
+import numpy as np
+from shapely.geometry import box
+from sklearn.cluster import KMeans
 
 logger = logging.getLogger(__name__)
 
@@ -10,201 +17,234 @@ SPLIT_TRAIN = "train"
 SPLIT_VALIDATION = "validation"
 SPLIT_TEST = "test"
 SPLIT_NAMES = (SPLIT_TRAIN, SPLIT_VALIDATION, SPLIT_TEST)
-DEFAULT_RATIOS = {SPLIT_TRAIN: 0.80, SPLIT_VALIDATION: 0.10, SPLIT_TEST: 0.10}
+# Test beats validation beats train; buffer and shared-feature rules drop the losing tile
+SPLIT_RANK = {SPLIT_TEST: 0, SPLIT_VALIDATION: 1, SPLIT_TRAIN: 2}
 SPLITS_FILENAME = "splits.json"
+EXCLUDED_BY_BUFFER = "buffer"
+EXCLUDED_BY_SHARED_FEATURE = "shared_feature"
+
+TILE_ID_PATTERN = re.compile(r"^(?P<prefix>.+)-(?P<x>\d+)-(?P<y>\d+)-(?P<z>\d+)$")
+
+
+@dataclass(frozen=True)
+class SplitSettings:
+    """How tiles are split; read from the `split` key of a dataset config."""
+
+    regions_per_project: int = 10
+    validation_regions: int = 1
+    test_regions: int = 1
+    buffer_meters: float = 0.0
+    exclude_shared_features: bool = False
+
+    @classmethod
+    def from_mapping(cls, mapping: dict) -> "SplitSettings":
+        unknown = set(mapping) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"unknown split settings: {sorted(unknown)}")
+        settings = cls(**mapping)
+        held_out = settings.validation_regions + settings.test_regions
+        if settings.validation_regions < 1 or settings.test_regions < 1:
+            raise ValueError("split needs at least one validation and one test region")
+        if settings.regions_per_project <= held_out:
+            raise ValueError(
+                f"regions_per_project ({settings.regions_per_project}) must exceed the "
+                f"{held_out} held-out regions, so every project keeps training tiles"
+            )
+        if settings.buffer_meters < 0:
+            raise ValueError("buffer_meters must not be negative")
+        if not isinstance(settings.exclude_shared_features, bool):
+            raise ValueError("exclude_shared_features must be true or false")
+        return settings
+
+
+@dataclass(frozen=True)
+class TileRef:
+    tile_id: str
+    project_id: int
+    x: int
+    y: int
+    z: int
+    label_path: Path
 
 
 @dataclass
-class ProjectCluster:
-    imagery_url: str
-    project_ids: list[int]
-    total_tiles: int
+class SplitAssignment:
+    """Split of every tile, and the tiles the buffer or shared-feature rule leaves out."""
+
+    settings: SplitSettings
+    tiles: dict[str, str]
+    excluded: dict[str, str]
+
+    def split_for(self, tile_id: str) -> str | None:
+        return self.tiles.get(tile_id)
 
 
-@dataclass
-class ProjectDetail:
-    tiles: int
-    features: int
-    country: str
+def collect_tiles(dataset_dir: Path) -> list[TileRef]:
+    tiles: list[TileRef] = []
+
+    for project_dir in sorted(dataset_dir.glob("project_*")):
+        metadata_path = project_dir / "metadata.json"
+        if not metadata_path.exists():
+            continue
+
+        project_id = json.loads(metadata_path.read_text())["project_id"]
+        for label_path in sorted((project_dir / "labels").glob("*.geojson")):
+            match = TILE_ID_PATTERN.match(label_path.stem)
+            if match:
+                x, y, z = (int(match.group(key)) for key in ("x", "y", "z"))
+                tiles.append(TileRef(label_path.stem, project_id, x, y, z, label_path))
+
+    return tiles
 
 
-def _load_project_details(dataset_dir: Path) -> dict[int, ProjectDetail]:
-    stats_path = dataset_dir / "dataset_stats.json"
-    if not stats_path.exists():
-        return {}
+def tile_footprints(tiles: list[TileRef]) -> gpd.GeoDataFrame:
+    """Tile squares in the local UTM zone, so distances are ground metres."""
+    geometries = [box(*mercantile.bounds(tile.x, tile.y, tile.z)) for tile in tiles]
+    frame = gpd.GeoDataFrame(
+        {"tile_id": [tile.tile_id for tile in tiles]}, geometry=geometries, crs=4326
+    )
+    return frame.to_crs(frame.estimate_utm_crs())
 
-    stats = json.loads(stats_path.read_text())
-    return {
-        p["project_id"]: ProjectDetail(
-            tiles=p["valid_pairs"],
-            features=p.get("total_label_features", 0),
-            country=p.get("country", ""),
+
+def _project_regions(tiles: list[TileRef], settings: SplitSettings, seed: int) -> dict[str, str]:
+    """Cluster a project's tiles into contiguous regions and hold some out whole."""
+    if len(tiles) < settings.regions_per_project:
+        logger.warning(
+            "Project %d has %d tiles, fewer than %d regions; all go to train",
+            seed,
+            len(tiles),
+            settings.regions_per_project,
         )
-        for p in stats.get("projects", [])
+        return dict.fromkeys((tile.tile_id for tile in tiles), SPLIT_TRAIN)
+
+    centres = tile_footprints(tiles).geometry.centroid
+    coordinates = np.column_stack([centres.x, centres.y])
+    regions = KMeans(settings.regions_per_project, n_init=10, random_state=seed).fit_predict(
+        coordinates
+    )
+
+    # k-means numbers its regions arbitrarily, so the first ones are as good a pick as any
+    held_out = dict.fromkeys(range(settings.test_regions), SPLIT_TEST)
+    validation_end = settings.test_regions + settings.validation_regions
+    held_out |= dict.fromkeys(range(settings.test_regions, validation_end), SPLIT_VALIDATION)
+    return {
+        tile.tile_id: held_out.get(int(region), SPLIT_TRAIN)
+        for tile, region in zip(tiles, regions, strict=True)
     }
 
 
-def _load_project_tile_counts(dataset_dir: Path) -> dict[int, int]:
-    return {pid: d.tiles for pid, d in _load_project_details(dataset_dir).items()}
-
-
-def _load_project_imagery_urls(dataset_dir: Path) -> dict[int, str]:
-    summary_path = dataset_dir / "projects_summary.json"
-    if not summary_path.exists():
-        return {}
-
-    projects = json.loads(summary_path.read_text())
-    return {p["project_id"]: p["imagery_url"] for p in projects}
-
-
-def build_clusters(dataset_dir: Path) -> list[ProjectCluster]:
-    tile_counts = _load_project_tile_counts(dataset_dir)
-    imagery_urls = _load_project_imagery_urls(dataset_dir)
-
-    url_to_projects: dict[str, list[int]] = defaultdict(list)
-    for project_id, url in imagery_urls.items():
-        if project_id in tile_counts:
-            url_to_projects[url].append(project_id)
-
-    clusters = []
-    for url, project_ids in url_to_projects.items():
-        total_tiles = sum(tile_counts.get(pid, 0) for pid in project_ids)
-        clusters.append(
-            ProjectCluster(
-                imagery_url=url,
-                project_ids=sorted(project_ids),
-                total_tiles=total_tiles,
-            )
-        )
-
-    clusters.sort(key=lambda c: c.total_tiles, reverse=True)
-    return clusters
-
-
-def assign_splits(
-    clusters: list[ProjectCluster],
-    ratios: dict[str, float] | None = None,
-) -> dict[int, str]:
-    ratios = ratios or DEFAULT_RATIOS
-    total_tiles = sum(c.total_tiles for c in clusters)
-
-    if total_tiles == 0:
-        return {}
-
-    split_tiles: dict[str, int] = dict.fromkeys(SPLIT_NAMES, 0)
-    split_targets = {name: ratio * total_tiles for name, ratio in ratios.items()}
-    assignments: dict[int, str] = {}
-
-    for cluster in clusters:
-        best_split = _pick_best_fit_split(split_tiles, split_targets, cluster.total_tiles)
-        for pid in cluster.project_ids:
-            assignments[pid] = best_split
-        split_tiles[best_split] += cluster.total_tiles
-
-    return assignments
-
-
-def _pick_best_fit_split(
-    current_tiles: dict[str, int],
-    targets: dict[str, float],
-    cluster_tiles: int,
-) -> str:
-    deficits = {s: targets[s] - current_tiles[s] for s in SPLIT_NAMES}
-
-    fits = [s for s in SPLIT_NAMES if deficits[s] >= cluster_tiles]
-    if fits:
-        return min(fits, key=lambda s: deficits[s] - cluster_tiles)
-
-    return max(SPLIT_NAMES, key=lambda s: deficits[s])
-
-
-def generate_splits(
-    dataset_dir: Path,
-    ratios: dict[str, float] | None = None,
-) -> dict[int, str]:
-    clusters = build_clusters(dataset_dir)
-
-    if not clusters:
-        logger.warning("No project clusters found, cannot generate splits")
-        return {}
-
-    logger.info(
-        "Built %d clusters from %d projects",
-        len(clusters),
-        sum(len(c.project_ids) for c in clusters),
+def _buffer_exclusions(
+    tiles: list[TileRef], splits: dict[str, str], buffer_meters: float
+) -> set[str]:
+    """Tiles closer than the buffer to a kept tile of a winning split, measured per UTM zone."""
+    footprints = gpd.GeoDataFrame(
+        {
+            "tile_id": [tile.tile_id for tile in tiles],
+            "project_id": [tile.project_id for tile in tiles],
+            "rank": [SPLIT_RANK[splits[tile.tile_id]] for tile in tiles],
+        },
+        geometry=[box(*mercantile.bounds(tile.x, tile.y, tile.z)) for tile in tiles],
+        crs=4326,
     )
-    for cluster in clusters[:5]:
-        logger.debug(
-            "  Cluster %s: %d tiles, projects %s",
-            cluster.imagery_url[-40:],
-            cluster.total_tiles,
-            cluster.project_ids,
-        )
+    zones = {
+        project_id: project_tiles.estimate_utm_crs().srs
+        for project_id, project_tiles in footprints.groupby("project_id")
+    }
+    footprints["zone"] = footprints["project_id"].map(zones)
 
-    assignments = assign_splits(clusters, ratios)
-    splits_path = dataset_dir / SPLITS_FILENAME
-    splits_path.write_text(json.dumps(assignments, indent=2, sort_keys=True))
+    excluded: set[str] = set()
+    for zone, zone_tiles in footprints.groupby("zone"):
+        metric = zone_tiles.to_crs(zone)
+        for rank in sorted(set(metric["rank"]))[:-1]:
+            kept = metric[~metric["tile_id"].isin(excluded)]
+            stronger = kept[kept["rank"] == rank]
+            weaker = kept[kept["rank"] > rank]
+            near = weaker.sjoin(stronger, predicate="dwithin", distance=buffer_meters)
+            excluded |= set(near["tile_id_left"])
+    return excluded
 
-    split_summary = _summarize_splits(assignments, dataset_dir)
-    _log_split_summary(split_summary)
 
-    logger.info("Splits saved to %s", splits_path)
-    return assignments
+def _tile_features(tile: TileRef) -> set[tuple[str, int]]:
+    features = json.loads(tile.label_path.read_text())["features"]
+    return {(f["properties"]["osm_type"], f["properties"]["osm_id"]) for f in features}
 
 
-def load_splits(dataset_dir: Path) -> dict[int, str]:
+def _shared_feature_exclusions(tiles: list[TileRef], splits: dict[str, str]) -> set[str]:
+    """Tiles holding part of a feature that also lies in a winning split."""
+    features = {tile.tile_id: _tile_features(tile) for tile in tiles}
+    strongest: dict[tuple[str, int], int] = {}
+    for tile in tiles:
+        for feature in features[tile.tile_id]:
+            rank = SPLIT_RANK[splits[tile.tile_id]]
+            strongest[feature] = min(rank, strongest.get(feature, rank))
+    return {
+        tile.tile_id
+        for tile in tiles
+        if any(strongest[f] < SPLIT_RANK[splits[tile.tile_id]] for f in features[tile.tile_id])
+    }
+
+
+def assign_splits(tiles: list[TileRef], settings: SplitSettings) -> SplitAssignment:
+    by_project: dict[int, list[TileRef]] = defaultdict(list)
+    for tile in tiles:
+        by_project[tile.project_id].append(tile)
+
+    splits: dict[str, str] = {}
+    for project_id in sorted(by_project):
+        splits |= _project_regions(by_project[project_id], settings, seed=project_id)
+
+    excluded: dict[str, str] = {}
+    if settings.buffer_meters > 0:
+        buffered = _buffer_exclusions(tiles, splits, settings.buffer_meters)
+        excluded |= dict.fromkeys(buffered, EXCLUDED_BY_BUFFER)
+    if settings.exclude_shared_features:
+        kept = [tile for tile in tiles if tile.tile_id not in excluded]
+        shared = _shared_feature_exclusions(kept, splits)
+        excluded |= dict.fromkeys(shared, EXCLUDED_BY_SHARED_FEATURE)
+
+    kept_splits = {tile_id: name for tile_id, name in splits.items() if tile_id not in excluded}
+    return SplitAssignment(settings=settings, tiles=kept_splits, excluded=excluded)
+
+
+def generate_splits(dataset_dir: Path, settings: SplitSettings) -> SplitAssignment | None:
+    tiles = collect_tiles(dataset_dir)
+    if not tiles:
+        logger.warning("No tiles found under %s, cannot generate splits", dataset_dir)
+        return None
+
+    assignment = assign_splits(tiles, settings)
+    payload = {
+        "settings": asdict(settings),
+        "tiles": dict(sorted(assignment.tiles.items())),
+        "excluded": dict(sorted(assignment.excluded.items())),
+    }
+    (dataset_dir / SPLITS_FILENAME).write_text(json.dumps(payload, indent=2))
+
+    _log_summary(tiles, assignment)
+    logger.info("Splits saved to %s", dataset_dir / SPLITS_FILENAME)
+    return assignment
+
+
+def load_splits(dataset_dir: Path) -> SplitAssignment | None:
     splits_path = dataset_dir / SPLITS_FILENAME
     if not splits_path.exists():
-        return {}
-
-    raw = json.loads(splits_path.read_text())
-    return {int(k): v for k, v in raw.items()}
-
-
-def compute_split_stats(dataset_dir: Path) -> dict[str, dict] | None:
-    assignments = load_splits(dataset_dir)
-    if not assignments:
         return None
-    return _summarize_splits(assignments, dataset_dir)
+
+    payload = json.loads(splits_path.read_text())
+    if "settings" not in payload:
+        raise ValueError(f"{splits_path} uses an older format; rerun --generate-splits")
+    return SplitAssignment(
+        settings=SplitSettings.from_mapping(payload["settings"]),
+        tiles=payload["tiles"],
+        excluded=payload["excluded"],
+    )
 
 
-def _summarize_splits(
-    assignments: dict[int, str],
-    dataset_dir: Path,
-) -> dict[str, dict]:
-    details = _load_project_details(dataset_dir)
-    total_tiles = sum(details[pid].tiles for pid in assignments if pid in details)
-
-    summary: dict[str, dict] = {}
-    for split_name in SPLIT_NAMES:
-        project_ids = [pid for pid, s in assignments.items() if s == split_name]
-        tiles = sum(details[pid].tiles for pid in project_ids if pid in details)
-        features = sum(details[pid].features for pid in project_ids if pid in details)
-        countries = sorted(
-            {details[pid].country for pid in project_ids if pid in details and details[pid].country}
-        )
-        pct = (tiles / total_tiles * 100) if total_tiles else 0
-        summary[split_name] = {
-            "projects": len(project_ids),
-            "tiles": tiles,
-            "features": features,
-            "countries": countries,
-            "percent": round(pct, 1),
-        }
-
-    return summary
-
-
-def _log_split_summary(summary: dict[str, dict]):
-    logger.info("Split assignment summary:")
-    for split_name in SPLIT_NAMES:
-        info = summary[split_name]
-        logger.info(
-            "  %s: %d projects, %d tiles, %d label features, %d countries (%.1f%%)",
-            split_name,
-            info["projects"],
-            info["tiles"],
-            info["features"],
-            len(info["countries"]),
-            info["percent"],
-        )
+def _log_summary(tiles: list[TileRef], assignment: SplitAssignment) -> None:
+    per_split = Counter(assignment.tiles.values())
+    total = len(tiles)
+    logger.info("Split assignment over %d tiles:", total)
+    for name in SPLIT_NAMES:
+        logger.info("  %s: %d tiles (%.1f%%)", name, per_split[name], 100 * per_split[name] / total)
+    for reason, count in Counter(assignment.excluded.values()).items():
+        logger.info("  left out by %s rule: %d tiles", reason, count)

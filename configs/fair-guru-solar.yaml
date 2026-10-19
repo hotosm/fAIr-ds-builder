@@ -1,0 +1,44 @@
+output_dir: fAIr-guru-td-solar
+project_ids: 50661
+feature_type: generator:source
+tag_values: [solar]
+geometry_types: [point, polygon]
+zoom: 21
+burn_binary_masks: false
+dataset_version: 0.1.0
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-solar
+  title: 'fAIr Open Mapping Gurus: rooftop solar'
+  label_noun: solar panels
+  tasks: [segmentation]
+  summary: >-
+    Rooftop solar panel training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme, built from a Freetown, Sierra Leone project that mapped solar panels to generate
+    AI training data. Drone imagery from OpenAerialMap is paired with OpenStreetMap solar panels
+    mapped and validated in HOT Tasking Manager.
+  selection: >-
+    The project lists `OTHER` as its mapping type and instructed mappers to trace rooftop panel
+    arrays. Most mapped panels carry `power=generator`, `generator:source=solar`, `generator:method=photovoltaic`
+    and `location=roof`. Tiles come only from task squares marked `VALIDATED`. Labels are every
+    OpenStreetMap feature with `generator:source=solar` intersecting a tile: mostly array outlines,
+    plus some panels mapped as points.
+
+
+    Labels are published as mapped in `label_geojson`, and the `mask` column is empty.
+  limitations:
+  - >-
+    Panels cover a small part of the project area, so most tiles have `num_features` 0, and every
+    tile is kept. Select `num_features > 0` for tiles with panels.
+  - >-
+    A few panels are tagged with a `location` other than `roof`, and some are untagged for
+    `location`.
+  - Some panel arrays visible in the imagery are unlabelled.

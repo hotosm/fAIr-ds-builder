@@ -165,6 +165,16 @@ def test_publish_stac_without_card_and_fair_sections_is_a_usage_error(tmp_path, 
     publish.assert_not_called()
 
 
+def test_update_root_catalog_without_a_card_section_is_a_usage_error(tmp_path, mocker):
+    update = mocker.patch.object(cli, "update_root_catalog")
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--output-dir", str(tmp_path), "--update-root-catalog", "hotosm/fAIr-guru-stac"])
+
+    assert exit_info.value.code == 2
+    update.assert_not_called()
+
+
 def test_all_combined_with_a_single_step_is_a_usage_error(tmp_path):
     with pytest.raises(SystemExit):
         cli.parse_args(["--output-dir", str(tmp_path), "--all", "--generate-stac"])
@@ -172,7 +182,11 @@ def test_all_combined_with_a_single_step_is_a_usage_error(tmp_path):
 
 @pytest.mark.parametrize(
     "arguments",
-    [["--all", "--compress-raw"], ["--publish-stac", "https://stac.example.org", "--push-to-hub"]],
+    [
+        ["--all", "--compress-raw"],
+        ["--publish-stac", "https://stac.example.org", "--push-to-hub"],
+        ["--update-root-catalog", "hotosm/fAIr-guru-stac", "--push-to-hub"],
+    ],
 )
 def test_steps_that_must_run_alone_are_usage_errors(tmp_path, arguments):
     with pytest.raises(SystemExit):

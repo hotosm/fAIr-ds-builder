@@ -520,10 +520,11 @@ def test_push_uploads_the_stac_with_links_pinned_to_the_release(tmp_path, mocker
     steps = [call[0] for call in api.mock_calls if call[0] in ("upload_folder", "create_tag")]
     assert steps == ["upload_folder", "create_tag"]
 
-    release = "https://huggingface.co/datasets/hotosm/test/resolve/v0.1.0/stac"
-    assert uploaded["item"]["assets"]["imagery"]["href"] == f"{release}/project-1/imagery.tif"
+    assets = "https://huggingface.co/datasets/hotosm/test/resolve/v0.1.0/stac"
+    links = "https://huggingface.co/datasets/hotosm/test/raw/v0.1.0/stac"
+    assert uploaded["item"]["assets"]["imagery"]["href"] == f"{assets}/project-1/imagery.tif"
     assert {link["href"] for link in uploaded["item"]["links"] if link["rel"] == "root"} == {
-        f"{release}/collection.json"
+        f"{links}/collection.json"
     }
     assert uploaded["cog"] == b"cog"
     assert uploaded["kwargs"]["path_in_repo"] == "stac"

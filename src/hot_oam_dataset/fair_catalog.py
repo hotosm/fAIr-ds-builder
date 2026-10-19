@@ -12,7 +12,7 @@ import pystac
 from shapely.geometry import box, mapping
 
 from hot_oam_dataset.dataset_card import CardText
-from hot_oam_dataset.hf_publisher import release_tags
+from hot_oam_dataset.hf_publisher import HUB_DATASETS_URL, release_tags
 from hot_oam_dataset.split_generator import SPLIT_NAMES
 from hot_oam_dataset.stac_export import SPLIT_MAP_FILENAME, STAC_DIRNAME
 
@@ -78,7 +78,7 @@ def build_fair_dataset_item(
     feature_type = stats["feature_type"]
     tag_values = stats["tag_values"] or ["*"]
     data_href = _release_href(card_text.repo_id, dataset_version, "data")
-    hub_url = f"https://huggingface.co/datasets/{card_text.repo_id}"
+    hub_url = f"{HUB_DATASETS_URL}/{card_text.repo_id}"
 
     item = build_dataset_item(
         label_type="vector",

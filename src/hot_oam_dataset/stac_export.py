@@ -462,10 +462,13 @@ def generate_stac(
     return stac_dir / "collection.json"
 
 
-def write_published_stac(stac_dir: Path, base_url: str, out_dir: Path) -> None:
-    """Write the catalogue JSON with absolute links under base_url, where it is published."""
+def write_published_stac(
+    stac_dir: Path, links_base_url: str, assets_base_url: str, out_dir: Path
+) -> None:
+    """Write the catalogue JSON with absolute links to its published JSON and assets."""
     # STAC Browser loads a label item's source imagery without its address, so relative links fail
-    base_url = base_url.rstrip("/")
+    links_base_url = links_base_url.rstrip("/")
+    assets_base_url = assets_base_url.rstrip("/")
     collection = pystac.Collection.from_file(str(stac_dir / "collection.json"))
     root = stac_dir.resolve()
     asset_paths = {
@@ -473,8 +476,8 @@ def write_published_stac(stac_dir: Path, base_url: str, out_dir: Path) -> None:
         for item in collection.get_items()
         for key, asset in item.assets.items()
     }
-    collection.normalize_hrefs(base_url)
+    collection.normalize_hrefs(links_base_url)
     for item in collection.get_items():
         for key, asset in item.assets.items():
-            asset.href = f"{base_url}/{asset_paths[(item.id, key)]}"
+            asset.href = f"{assets_base_url}/{asset_paths[(item.id, key)]}"
     collection.save(catalog_type=pystac.CatalogType.ABSOLUTE_PUBLISHED, dest_href=str(out_dir))

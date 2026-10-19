@@ -134,7 +134,7 @@ which place `label_geojson` on its pixels.
 
 Each project has an imagery item, a Cloud Optimized GeoTIFF of its tiles, and a labels item
 holding the labels and the tile footprints with their split.
-[Open in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/<repo>/resolve/v<version>/stac/collection.json)
+[Open in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/<repo>/raw/v<version>/stac/collection.json)
 to see the labels over the imagery, or follow the
 [QGIS guide](https://hotosm.github.io/tm-oam-ds-builder/guides/qgis/) to open them in QGIS.
 

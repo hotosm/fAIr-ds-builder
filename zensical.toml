@@ -18,6 +18,7 @@ nav = [
     { "Inspect in QGIS" = "guides/qgis.md" },
     { "Build a dataset" = "guides/build-a-dataset.md" },
   ] },
+  { "Reference" = "reference.md" },
 ]
 
 [project.theme]

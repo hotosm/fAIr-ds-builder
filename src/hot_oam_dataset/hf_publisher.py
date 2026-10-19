@@ -47,6 +47,7 @@ CARD_FILENAME = "dataset_card.md"
 MAX_CARD_CLASS_ROWS = 15
 SAMPLE_SEED = 0
 DEFAULT_TILE_PREFIX = "OAM"
+HUB_DATASETS_URL = "https://huggingface.co/datasets"
 
 
 def _project_columns(metadata: dict) -> dict:
@@ -370,24 +371,28 @@ def push_to_hub(
         _upload_published_stac(stac_dir, repo_id, dataset_version)
 
     _tag_hf_revision(repo_id, dataset_version)
-    logger.info("Dataset published to https://huggingface.co/datasets/%s", repo_id)
+    logger.info("Dataset published to %s/%s", HUB_DATASETS_URL, repo_id)
+
+
+def release_stac_url(repo_id: str, dataset_version: str, route: str) -> str:
+    return f"{HUB_DATASETS_URL}/{repo_id}/{route}/v{dataset_version}/{STAC_DIRNAME}"
 
 
 def _upload_published_stac(stac_dir: Path, repo_id: str, dataset_version: str) -> None:
     """Upload the catalogue with links absolute to the release tag the push creates."""
-    base_url = (
-        f"https://huggingface.co/datasets/{repo_id}/resolve/v{dataset_version}/{STAC_DIRNAME}"
-    )
+    # raw/ answers JSON without the relative redirect QGIS cannot follow; LFS assets need resolve/
+    links_base_url = release_stac_url(repo_id, dataset_version, "raw")
+    assets_base_url = release_stac_url(repo_id, dataset_version, "resolve")
     # Staged beside the dataset so the large binaries are hard-linked, never copied
     with tempfile.TemporaryDirectory(dir=stac_dir.parent) as staging:
         staging_dir = Path(staging)
-        write_published_stac(stac_dir, base_url, staging_dir)
+        write_published_stac(stac_dir, links_base_url, assets_base_url, staging_dir)
         for path in stac_dir.rglob("*"):
             if path.is_file() and path.suffix != ".json":
                 target = staging_dir / path.relative_to(stac_dir)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.link(path, target)
-        logger.info("Uploading STAC catalogue %s with links under %s", stac_dir, base_url)
+        logger.info("Uploading STAC catalogue %s with links under %s", stac_dir, links_base_url)
         HfApi().upload_folder(
             folder_path=str(staging_dir),
             path_in_repo=STAC_DIRNAME,
@@ -468,7 +473,7 @@ def push_raw_to_hub(
                 commit_message=f"Upload {filename} v{dataset_version}",
             )
 
-    logger.info("Raw dataset uploaded to https://huggingface.co/datasets/%s/tree/main/raw", repo_id)
+    logger.info("Raw dataset uploaded to %s/%s/tree/main/raw", HUB_DATASETS_URL, repo_id)
 
 
 def _require_card_version(dataset_dir: Path, dataset_version: str) -> None:
@@ -661,8 +666,7 @@ def _write_samples(
     ):
         return None
     return (
-        f"https://huggingface.co/datasets/{card_text.repo_id}/resolve/v{dataset_version}/"
-        f"{SAMPLE_TILES_FILENAME}"
+        f"{HUB_DATASETS_URL}/{card_text.repo_id}/resolve/v{dataset_version}/{SAMPLE_TILES_FILENAME}"
     )
 
 

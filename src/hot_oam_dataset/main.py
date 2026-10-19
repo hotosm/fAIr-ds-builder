@@ -23,6 +23,7 @@ from hot_oam_dataset.hf_publisher import (
     push_raw_to_hub,
     push_to_hub,
 )
+from hot_oam_dataset.root_catalog import update_root_catalog
 from hot_oam_dataset.split_generator import SplitSettings, generate_splits
 from hot_oam_dataset.stac_export import generate_stac
 from hot_oam_dataset.tm_client import (
@@ -149,6 +150,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Register the dataset in a fAIr STAC API, e.g. https://stac.ai.hotosm.org/stac, "
             f"after --push-to-hub; needs the config's card and fair sections and {FAIR_API_KEY_ENV}"
+        ),
+    )
+    parser.add_argument(
+        "--update-root-catalog",
+        metavar="ROOT_REPO_ID",
+        help=(
+            "Link the dataset's Hub release as a child of the STAC catalogue in this Hub repo, "
+            "e.g. hotosm/fAIr-guru-stac, after --push-to-hub; needs the config's card section"
         ),
     )
     parser.add_argument(
@@ -323,6 +332,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             ("--push-to-hub", args.push_to_hub is not None),
             ("--push-raw", args.push_raw is not None),
             ("--publish-stac", args.publish_stac),
+            ("--update-root-catalog", args.update_root_catalog),
             ("--compress-raw", args.compress_raw),
         )
         if chosen
@@ -331,6 +341,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(f"--all runs every build step and cannot be combined with {single_steps[0]}")
     if args.publish_stac and len(single_steps) > 1:
         parser.error("--publish-stac runs on its own, after --push-to-hub has finished")
+    if args.update_root_catalog and len(single_steps) > 1:
+        parser.error("--update-root-catalog runs on its own, after --push-to-hub has finished")
     return args
 
 
@@ -382,6 +394,13 @@ def _run_standalone_command(args, output_dir: Path) -> bool:
             args.fair_settings,
             args.dataset_version,
         )
+        return True
+
+    if args.update_root_catalog:
+        if not args.card_text:
+            logger.error("--update-root-catalog needs a config with a card section")
+            sys.exit(2)
+        update_root_catalog(args.update_root_catalog, args.card_text, args.dataset_version)
         return True
 
     if args.push_raw is not None:

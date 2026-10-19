@@ -144,7 +144,7 @@ def test_packaged_card_links_the_release_in_stac_browser():
     rendered = render_card_text(read_card_template(), card_text, "0.1.0")
 
     browser = "https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets"
-    assert f"{browser}/hotosm/fAIr-guru-td-trees/resolve/v0.1.0/stac/collection.json" in rendered
+    assert f"{browser}/hotosm/fAIr-guru-td-trees/raw/v0.1.0/stac/collection.json" in rendered
     assert "<repo>" not in rendered
     assert "<version>" not in rendered
     assert "<selection>" not in rendered

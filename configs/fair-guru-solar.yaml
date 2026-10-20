@@ -5,7 +5,7 @@ tag_values: [solar]
 geometry_types: [point, polygon]
 zoom: 21
 burn_binary_masks: false
-dataset_version: 0.1.0
+dataset_version: 0.1.1
 split:
   regions_per_project: 10
   validation_regions: 1

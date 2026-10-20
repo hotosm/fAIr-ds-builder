@@ -5,9 +5,12 @@ projects. Each dataset pairs 256x256 [OpenAerialMap](https://openaerialmap.org/)
 with the [OpenStreetMap](https://www.openstreetmap.org/) features mapped on them, and is
 published on Hugging Face with a STAC catalogue.
 
-Guides: [hotosm.github.io/tm-oam-ds-builder](https://hotosm.github.io/tm-oam-ds-builder/)
+Guides: [hotosm.github.io/tm-oam-ds-builder](https://hotosm.github.io/tm-oam-ds-builder/). The
+repository is `tm-oam-ds-builder`, and the command it installs is `hot-oam-dataset`.
 
 ## Install
+
+With [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv tool install git+https://github.com/hotosm/tm-oam-ds-builder

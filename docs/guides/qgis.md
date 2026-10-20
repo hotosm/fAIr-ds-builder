@@ -9,18 +9,19 @@
     https://huggingface.co/datasets/hotosm/fAIr-guru-stac/raw/main/catalog.json
     ```
 
-3. Expand a dataset. Each Tasking Manager project has a labels item and an imagery item.
+3. Expand a dataset. Each Tasking Manager project is one item.
 
 ![Browser panel with the STAC connection and one project expanded](../assets/qgis/browser.png)
 
 ## Load a project
 
-Drag the imagery item onto the map. From QGIS 4.0, dragging the labels item adds the
-GeoParquet labels and tiles
+Drag the project's item onto the map. From QGIS 4.0 this adds the imagery, and the GeoParquet
+labels and tiles
 ([source](https://github.com/qgis/QGIS/blob/release-4_0/src/core/stac/qgsstacasset.cpp)). In
-QGIS 3.44, add them with **Layer > Add Layer > Add Vector Layer**, **Protocol: HTTP(S)**, and
-the asset URL
-([source](https://github.com/qgis/QGIS/blob/release-3_44/src/core/stac/qgsstacasset.cpp)).
+QGIS 3.44 it adds the imagery
+([source](https://github.com/qgis/QGIS/blob/release-3_44/src/core/stac/qgsstacdataitems.cpp)); add
+the labels and tiles with **Layer > Add Layer > Add Vector Layer**, **Protocol: HTTP(S)**, and
+the asset URL.
 
 ## Show the splits
 
@@ -40,7 +41,7 @@ A tile shows its split, label count and classes:
 
 ![Attributes of one tile footprint](../assets/qgis/tile-attributes.png)
 
-**Details** on an item shows its STAC metadata. QGIS 3.44 leaves list fields such as
+**Details** on an item shows its STAC metadata. QGIS 3.44 and 4.2 leave list fields such as
 `label:classes` blank there.
 
 ![STAC item details of project 40695](../assets/qgis/item-details.png)

@@ -92,7 +92,7 @@ projects from the Parquet rows.
 1. Find Tasking Manager projects of the mapping type, at least 95% validated, with OpenAerialMap imagery.
 2. Download 256x256 tiles that lie fully inside tasks marked `VALIDATED`, with [geoml-toolkits](https://github.com/kshitijrajsharma/geoml-toolkits).
 3. Download the OSM features on those tiles from the [HOT Raw Data API](https://github.com/hotosm/raw-data-api) and clip them per tile.
-4. Drop corrupt chips, orphan labels, and chips with more than 1% transparent pixels (gaps at the survey edge).
+4. Drop corrupt chips (the tile images), orphan labels, and chips with more than 1% transparent pixels (gaps at the survey edge).
 
 ## Output folder
 
@@ -100,7 +100,7 @@ projects from the Parquet rows.
 |------|---------|
 | `project_<id>/` | Chips, masks, per-tile GeoJSON labels and `metadata.json` |
 | `projects_summary.json`, `projects_map.geojson` | Discovered projects |
-| `dataset_stats.json` | Tile, label and class counts, countries and organisations |
+| `dataset_stats.json` | Tile, label and class counts, in total and per project |
 | `splits.json` | Split of every tile |
 | `parquet/` | `train`, `validation` and `test` Parquet |
 | `dataset_card.md`, `samples.png` | Dataset card and its sample tiles |
@@ -108,13 +108,16 @@ projects from the Parquet rows.
 
 ## STAC
 
-`--generate-stac` writes a static STAC Collection with two items per Tasking Manager project,
-following the [label extension](https://github.com/stac-extensions/label) v1.0.1:
+`--generate-stac` writes a static STAC Collection with one item, `project-<id>`, per Tasking
+Manager project, following the [label extension](https://github.com/stac-extensions/label)
+v1.0.1. The item carries the classes, counts per class and split, and the Tasking Manager
+project. Its assets:
 
-| Item | Assets |
-|------|--------|
-| `project-<id>` | `labels` (GeoJSON), `labels_parquet` and `tiles` (GeoParquet), with classes, counts per class and split, and the Tasking Manager project |
-| `project-<id>-imagery` | `imagery` (Cloud Optimized GeoTIFF), with the capture date and `raster:spatial_resolution` |
+| Asset | Content |
+|-------|---------|
+| `imagery` | Cloud Optimized GeoTIFF of the dataset tiles, with the capture date and `raster:spatial_resolution` |
+| `labels`, `labels_parquet` | Labels with OSM tags and split (GeoJSON, GeoParquet) |
+| `tiles` | Tile footprints with split (GeoParquet) |
 
 The local `stac/` uses relative links. `--push-to-hub` uploads a copy with absolute links to
 the release tag: STAC JSON under `https://huggingface.co/datasets/<repo>/raw/v<version>/stac/`

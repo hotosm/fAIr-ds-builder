@@ -1,9 +1,9 @@
 output_dir: fAIr-guru-td-buildings
-project_ids: 40695,50793
+project_ids: 40695,50793,60363
 feature_type: building
 zoom: 19
 burn_binary_masks: true
-dataset_version: 0.3.2
+dataset_version: 0.4.1
 split:
   regions_per_project: 10
   validation_regions: 1

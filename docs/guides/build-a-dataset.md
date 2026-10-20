@@ -2,11 +2,14 @@
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/):
+
 ```bash
 uv tool install git+https://github.com/hotosm/tm-oam-ds-builder
 ```
 
-Set `TM_TOKEN` for private Tasking Manager projects and `HF_TOKEN` to publish.
+Set `TM_TOKEN` (your Tasking Manager session token) for private projects and `HF_TOKEN` (a
+Hugging Face write token) to publish.
 
 ## Write a config
 
@@ -25,9 +28,12 @@ Writes tiles, splits, Parquet, card and STAC to `output_dir`.
 ## Publish
 
 ```bash
-hot-oam-dataset --config my-dataset.yaml --push-to-hub hotosm/my-dataset
-hot-oam-dataset --config my-dataset.yaml --update-root-catalog hotosm/fAIr-guru-stac
+hot-oam-dataset --config my-dataset.yaml --push-to-hub <your-hf-user>/my-dataset
+hot-oam-dataset --config my-dataset.yaml --update-root-catalog <your-hf-user>/my-stac
 ```
+
+`--update-root-catalog` adds the release to a STAC catalogue repo you can write to. HOT
+maintainers use `hotosm/fAIr-guru-stac`.
 
 The push tags the release `v<dataset_version>`. Raise `dataset_version` before `--all` for
 each new release: the push stops when the card was built for another version, or when that

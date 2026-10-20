@@ -525,18 +525,6 @@ def _collect_per_project_stats(output_dir: Path) -> list[tuple[dict, dict]]:
     return collected
 
 
-def _bbox_area_sq_km(bbox: list[float]) -> float:
-    if not bbox or len(bbox) < 4:
-        return 0.0
-    west, south, east, north = bbox
-    lat_mid = math.radians((south + north) / 2)
-    km_per_deg_lat = 111.32
-    km_per_deg_lon = 111.32 * math.cos(lat_mid)
-    width_km = abs(east - west) * km_per_deg_lon
-    height_km = abs(north - south) * km_per_deg_lat
-    return round(width_km * height_km, 2)
-
-
 def _distinct_metadata_values(collected: list[tuple[dict, dict]], key: str, default) -> list:
     values = {metadata.get(key, default) for metadata, _ in collected}
     return sorted(values, key=str)
@@ -548,7 +536,7 @@ def _single_or_mixed(values: list):
     return values[0] if len(values) == 1 else values
 
 
-def _project_report(metadata: dict, stats: dict, area_sq_km: float) -> dict:
+def _project_report(metadata: dict, stats: dict) -> dict:
     return {
         "project_id": metadata["project_id"],
         "name": metadata["name"],
@@ -561,51 +549,19 @@ def _project_report(metadata: dict, stats: dict, area_sq_km: float) -> dict:
         "pairs_without_features": stats["pairs_without_features"],
         "total_label_features": stats["total_label_features"],
         "class_counts": stats.get("class_counts", {}),
-        "area_sq_km": area_sq_km,
         "size_mb": round(stats.get("size_bytes", 0) / (1024 * 1024), 1),
     }
 
 
-def _accumulate_country_details(project_reports: list[dict]) -> dict[str, dict]:
-    projects: Counter[str] = Counter()
-    tiles: Counter[str] = Counter()
-    features: Counter[str] = Counter()
-    area: Counter[str] = Counter()
-
-    for report in project_reports:
-        country = report["country"]
-        projects[country] += 1
-        tiles[country] += report["valid_pairs"]
-        features[country] += report["total_label_features"]
-        area[country] += report["area_sq_km"]
-
-    return {
-        country: {
-            "projects": projects[country],
-            "tiles": tiles[country],
-            "features": features[country],
-            "area_sq_km": round(area[country], 2),
-        }
-        for country in projects
-    }
-
-
 def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version: str) -> dict:
-    project_reports = [
-        _project_report(metadata, stats, _bbox_area_sq_km(metadata.get("bbox", [])))
-        for metadata, stats in collected
-    ]
+    project_reports = [_project_report(metadata, stats) for metadata, stats in collected]
 
     total_pairs = sum(r["valid_pairs"] for r in project_reports)
     total_label_features = sum(r["total_label_features"] for r in project_reports)
-    total_size_bytes = sum(stats.get("size_bytes", 0) for _, stats in collected)
 
-    countries = Counter(r["country"] for r in project_reports)
     class_counts: Counter[str] = Counter()
     for report in project_reports:
         class_counts.update(report.get("class_counts", {}))
-    organisations = Counter(metadata.get("organisation", "Unknown") for metadata, _ in collected)
-    country_details = _accumulate_country_details(project_reports)
 
     feature_types = _distinct_metadata_values(collected, "feature_type", DEFAULT_FEATURE_TYPE)
     label_noun = (
@@ -620,10 +576,6 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
         "tiles_with_features": sum(r["pairs_with_features"] for r in project_reports),
         "tiles_without_features": sum(r["pairs_without_features"] for r in project_reports),
         "total_label_features": total_label_features,
-        "avg_features_per_tile": (
-            round(total_label_features / total_pairs, 1) if total_pairs else 0
-        ),
-        "total_area_sq_km": round(sum(r["area_sq_km"] for r in project_reports), 2),
         "feature_type": _single_or_mixed(feature_types),
         "tag_values": sorted(
             {value for metadata, _ in collected for value in metadata["tag_values"]}
@@ -634,14 +586,6 @@ def _build_aggregate_report(collected: list[tuple[dict, dict]], dataset_version:
             _distinct_metadata_values(collected, "tile_size_pixels", TILE_SIZE_PIXELS)
         ),
         "zoom_level": _single_or_mixed(_distinct_metadata_values(collected, "zoom", TILE_ZOOM)),
-        "tile_prefix": TILE_PREFIX,
-        "imagery_source": "OpenAerialMap",
-        "label_source": "OpenStreetMap",
-        "label_format": "GeoJSON",
-        "total_size_gb": round(total_size_bytes / (1024**3), 2),
-        "countries": dict(countries.most_common()),
-        "country_details": dict(sorted(country_details.items(), key=lambda x: -x[1]["tiles"])),
-        "organisations": dict(organisations.most_common()),
         "projects": project_reports,
     }
 
@@ -672,7 +616,6 @@ def _print_dataset_summary(stats: dict):
     print(f"  Tiles with {noun}:".ljust(25) + f"{stats['tiles_with_features']:,}")
     print(f"  Tiles without:         {stats['tiles_without_features']:,}")
     print(f"  Label {noun}:".ljust(25) + f"{stats['total_label_features']:,}")
-    print(f"  Avg {noun}/tile:".ljust(25) + f"{stats['avg_features_per_tile']}")
     top_classes = list(stats.get("class_counts", {}).items())[:5]
     if top_classes:
         print(
@@ -682,8 +625,4 @@ def _print_dataset_summary(stats: dict):
     tile_px = stats["tile_size_pixels"]
     print(f"  Tile size:             {tile_px}x{tile_px} px")
     print(f"  Zoom level:            {stats['zoom_level']}")
-    print(f"  Dataset size:          {stats['total_size_gb']} GB")
-    print(f"  Countries:             {len(stats['countries'])}")
-    for country, count in list(stats["countries"].items())[:10]:
-        print(f"    {country}: {count} projects")
     print(f"{'=' * width}\n")

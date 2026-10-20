@@ -1,12 +1,12 @@
 output_dir: fAIr-guru-td-road-surface
-project_ids: 40695,50793
+project_ids: 40695,50793,60363
 feature_type: surface
 require_tags: [highway]
 geometry_types: [line]
 tm_mapping_type: ROADS
 zoom: 19
 burn_binary_masks: false
-dataset_version: 0.1.2
+dataset_version: 0.2.1
 split:
   regions_per_project: 10
   validation_regions: 1
@@ -40,6 +40,6 @@ card:
   - >-
     Values are published as mapped. General values (`unpaved`, `paved`) sit alongside specific
     ones (`dirt`, `ground`, `compacted`, `asphalt`); group them to suit the model.
-  - Only roads tagged with `surface` are labelled.
+  - 'Only roads tagged with `surface` are labelled: 16,243 of the 23,777 road labels in fAIr-guru-td-highways (68%), counted per tile.'
   - >-
     Labels are centrelines, and road width varies from footpaths to primary roads.

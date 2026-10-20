@@ -3,6 +3,9 @@
 Each dataset has `train`, `validation` and `test` splits. A row is one 256x256 tile with its
 labels.
 
+Install the Hugging Face `datasets` library with `pip install datasets`. The mask example below
+also needs `rasterio`.
+
 ```python
 from datasets import load_dataset
 
@@ -13,13 +16,14 @@ dataset = load_dataset("hotosm/fAIr-guru-td-buildings")
 |--------|---------|
 | `image` | The tile as served by OpenAerialMap |
 | `mask` | Binary mask (0 background, 255 feature) in the buildings and highways datasets |
-| `label_geojson` | GeoJSON of the labels on the tile, in EPSG:4326, with their OSM tags |
+| `label_geojson` | GeoJSON of the labels on the tile, in longitude and latitude (EPSG:4326), with their OSM tags |
 | `class_counts` | JSON count of each class on the tile |
 | `num_features` | Number of labels on the tile |
 | `feature_type` | OSM tag key whose value is the class |
-| `tile_x`, `tile_y`, `tile_z` | XYZ tile |
+| `tile_id`, `tile_x`, `tile_y`, `tile_z` | [XYZ tile](https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames) |
 | `bbox_west`, `bbox_south`, `bbox_east`, `bbox_north` | Tile bounds in EPSG:4326 |
-| `project_id`, `project_url`, `country` | Source Tasking Manager project |
+| `project_id`, `project_name`, `project_url`, `country`, `organisation` | Source Tasking Manager project |
+| `imagery_url` | OpenAerialMap image the tile comes from |
 
 ## Read the labels
 

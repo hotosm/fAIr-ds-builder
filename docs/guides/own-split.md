@@ -50,6 +50,8 @@ Run it per project when a dataset spans several.
 
 ## With this tool
 
+This needs a local build of the dataset, see [Build a dataset](build-a-dataset.md).
+
 Set the buffer in the config's `split` section, then run `--generate-splits`,
 `--generate-parquet` and `--generate-stac`:
 

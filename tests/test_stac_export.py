@@ -20,6 +20,8 @@ from hot_oam_dataset.split_generator import SPLIT_NAMES
 from hot_oam_dataset.stac_export import (
     LABEL_EXTENSION_SCHEMA,
     PARQUET_COLUMNS,
+    RASTER_EXTENSION_SCHEMA,
+    WEB_MAP_LINKS_SCHEMA,
     generate_stac,
     labels_frame,
     write_imagery_cog,
@@ -180,7 +182,9 @@ def _write_dataset(tmp_path, records):
     return dataset_dir
 
 
-def test_stac_collection_has_label_and_imagery_items_per_project(tmp_path, monkeypatch, mocker):
+def test_stac_collection_has_one_item_per_project_with_imagery_and_labels(
+    tmp_path, monkeypatch, mocker
+):
     centre = mercantile.bounds(100, 200, ZOOM)
     tree = _tree((centre.west + centre.east) / 2, (centre.south + centre.north) / 2)
     records = [
@@ -214,42 +218,43 @@ def test_stac_collection_has_label_and_imagery_items_per_project(tmp_path, monke
     assert collection.summaries.get_list("label:tasks") == ["detection", "classification"]
     assert collection.summaries.get_list("dataset:zoom") == [ZOOM]
     items = {item.id: item for item in collection.get_items()}
-    assert set(items) == {"project-1", "project-1-imagery", "project-2", "project-2-imagery"}
+    assert set(items) == {"project-1", "project-2"}
 
-    labels_item = items["project-1"]
-    assert labels_item.stac_extensions == [LABEL_EXTENSION_SCHEMA]
-    assert labels_item.properties["label:tasks"] == ["detection", "classification"]
-    assert labels_item.properties["label:type"] == "vector"
-    assert labels_item.properties["label:properties"] == ["class"]
-    assert labels_item.properties["label:methods"] == ["manual"]
-    assert labels_item.properties["label:classes"] == [{"name": "class", "classes": ["tree"]}]
-    assert labels_item.properties["label:overviews"] == [
+    project_item = items["project-1"]
+    assert set(project_item.stac_extensions) == {
+        LABEL_EXTENSION_SCHEMA,
+        WEB_MAP_LINKS_SCHEMA,
+        RASTER_EXTENSION_SCHEMA,
+    }
+    assert project_item.properties["label:tasks"] == ["detection", "classification"]
+    assert project_item.properties["label:type"] == "vector"
+    assert project_item.properties["label:properties"] == ["class"]
+    assert project_item.properties["label:methods"] == ["manual"]
+    assert project_item.properties["label:classes"] == [{"name": "class", "classes": ["tree"]}]
+    assert project_item.properties["label:overviews"] == [
         {"property_key": "class", "counts": [{"name": "tree", "count": 1}]}
     ]
-    assert labels_item.properties["title"] == "Tree mapping"
-    assert labels_item.properties["dataset:labels"] == 1
+    assert project_item.properties["title"] == "Tree mapping"
+    assert project_item.properties["dataset:labels"] == 1
     assert items["project-2"].properties["tm:mapping_types"] == ["BUILDINGS", "ROADS"]
-    split_tiles = [labels_item.properties[f"dataset:tiles_{s}"] for s in SPLIT_NAMES]
+    split_tiles = [project_item.properties[f"dataset:tiles_{s}"] for s in SPLIT_NAMES]
     assert split_tiles == [1, 0, 1]
-    assert labels_item.assets["labels"].media_type == pystac.MediaType.GEOJSON
-    assert labels_item.assets["labels"].roles == ["labels", "labels-vector"]
-    assert labels_item.assets["labels_parquet"].roles == ["labels"]
+    assert project_item.assets["labels"].media_type == pystac.MediaType.GEOJSON
+    assert project_item.assets["labels"].roles == ["labels", "labels-vector"]
+    assert project_item.assets["labels_parquet"].roles == ["labels"]
 
-    source = labels_item.get_single_link("source")
-    assert source is not None
-    assert source.extra_fields["label:assets"] == ["imagery"]
-    source_href = source.get_absolute_href()
-    assert source_href is not None
-    imagery_item = pystac.Item.from_file(source_href)
-    assert imagery_item.id == "project-1-imagery"
-    xyz = imagery_item.get_single_link("xyz")
+    xyz = project_item.get_single_link("xyz")
     assert xyz is not None
     assert xyz.href == records[0]["imagery_url"]
     lookup.assert_any_call("https://tiles.openaerialmap.org/x/{z}/{x}/{y}", [0.0, 0.0, 1.0, 1.0])
-    assert imagery_item.datetime == captured
-    assert "gsd" not in imagery_item.properties
+    imagery = project_item.assets["imagery"]
+    assert imagery.media_type == pystac.MediaType.COG
+    assert imagery.roles == ["visual", "data"]
+    assert datetime.fromisoformat(imagery.extra_fields["datetime"]) == captured
+    assert project_item.datetime == datetime(2026, 10, 15, tzinfo=UTC)
+    assert "gsd" not in project_item.properties
     assert "gsd" not in collection.summaries.to_dict()
-    resolution = imagery_item.assets["imagery"].extra_fields["raster:spatial_resolution"]
+    resolution = imagery.extra_fields["raster:spatial_resolution"]
     tiles_south = mercantile.bounds(100, 200, ZOOM).south
     tiles_north = mercantile.bounds(101, 200, ZOOM).north
     centre_latitude = math.radians((tiles_south + tiles_north) / 2)
@@ -265,7 +270,7 @@ def test_stac_collection_has_label_and_imagery_items_per_project(tmp_path, monke
         "https://wiki.openstreetmap.org/wiki/Key:natural",
         "https://wiki.openstreetmap.org/wiki/Tag:natural=tree",
     ]
-    with rasterio.open(items["project-2-imagery"].assets["imagery"].get_absolute_href()) as cog:
+    with rasterio.open(items["project-2"].assets["imagery"].get_absolute_href()) as cog:
         assert cog.width == TILE_PIXELS
 
     for item in items.values():
@@ -275,11 +280,11 @@ def test_stac_collection_has_label_and_imagery_items_per_project(tmp_path, monke
             assert href is not None
             assert Path(href).is_file()
 
-    tiles = gpd.read_parquet(labels_item.assets["tiles"].get_absolute_href())
+    tiles = gpd.read_parquet(project_item.assets["tiles"].get_absolute_href())
     assert tiles.crs.to_epsg() == 4326
     assert sorted(tiles["split"]) == ["test", "train"]
-    geojson_labels = gpd.read_file(labels_item.assets["labels"].get_absolute_href())
-    parquet_labels = gpd.read_parquet(labels_item.assets["labels_parquet"].get_absolute_href())
+    geojson_labels = gpd.read_file(project_item.assets["labels"].get_absolute_href())
+    parquet_labels = gpd.read_parquet(project_item.assets["labels_parquet"].get_absolute_href())
     assert list(geojson_labels["class"]) == list(parquet_labels["class"]) == ["tree"]
     assert list(parquet_labels["split"]) == ["train"]
     assert {str(link.title).split(":")[0] for link in collection.get_links("license")} == {

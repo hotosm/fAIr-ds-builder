@@ -1,10 +1,10 @@
 output_dir: fAIr-guru-td-highways
-project_ids: 40695,50793
+project_ids: 40695,50793,60363
 feature_type: highway
 zoom: 19
 label_buffer_meters: 3
 burn_binary_masks: true
-dataset_version: 0.3.2
+dataset_version: 0.4.1
 split:
   regions_per_project: 10
   validation_regions: 1
@@ -31,9 +31,9 @@ card:
     GeoJSON labels keep the original centrelines.
   limitations:
   - >-
-    Both projects asked mappers to connect the existing road network and add missing minor roads
-    such as unclassified roads. Their instructions focus on roads, so some tracks and footpaths
-    visible in the imagery are unlabelled.
+    Projects 40695 and 50793 asked mappers to connect the existing road network and add missing
+    minor roads such as unclassified roads, so some tracks and footpaths visible in their imagery
+    are unlabelled. Project 60363 asked mappers to map all visible roads.
   - >-
     The 6 m band is wider than footpaths and narrower than wide roads.
   - >-

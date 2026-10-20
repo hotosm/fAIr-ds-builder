@@ -59,16 +59,12 @@ dataset_info:
 """
 
 
-def _write_dataset_stats(dataset_dir, projects, country_details=None):
+def _write_dataset_stats(dataset_dir, projects):
     stats = {
         "total_projects": len(projects),
         "tiles_with_features": sum(p["valid_pairs"] for p in projects),
         "tiles_without_features": 0,
         "total_label_features": sum(p.get("total_label_features", 0) for p in projects),
-        "avg_features_per_tile": 5.0,
-        "total_area_sq_km": 100.0,
-        "countries": {},
-        "country_details": country_details or {},
         "generated_at": "2026-04-06T00:00:00+00:00",
         "projects": projects,
     }

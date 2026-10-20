@@ -231,48 +231,11 @@ def write_split_map(tiles: gpd.GeoDataFrame, project_names: dict[int, str], path
     figure.savefig(path, dpi=110)
 
 
-def _imagery_item(
-    record: dict, tiles: gpd.GeoDataFrame, source: OamImagery, href: Path
-) -> pystac.Item:
-    project_id = record["project_id"]
-    centre_latitude = (tiles.total_bounds[1] + tiles.total_bounds[3]) / 2
-    item = pystac.Item(
-        id=f"project-{project_id}-imagery",
-        geometry=box(*tiles.total_bounds).__geo_interface__,
-        bbox=list(tiles.total_bounds),
-        datetime=source.acquired,
-        properties={
-            "title": f"{record['project_name']} imagery",
-            "description": (
-                f"OpenAerialMap imagery '{source.title}' of Tasking Manager project {project_id}: "
-                "the dataset chips placed at their tile positions."
-            ),
-        },
-        stac_extensions=[WEB_MAP_LINKS_SCHEMA, RASTER_EXTENSION_SCHEMA],
-    )
-    # No media type: the tile server answers in JPEG or PNG depending on the imagery
-    item.add_link(pystac.Link("xyz", record["imagery_url"], title="OpenAerialMap"))
-    item.add_asset(
-        "imagery",
-        pystac.Asset(
-            href=str(href),
-            title="Imagery mosaic of the dataset chips (Cloud Optimized GeoTIFF, JPEG)",
-            media_type=pystac.MediaType.COG,
-            roles=["visual", "data"],
-            extra_fields={
-                "raster:spatial_resolution": round(
-                    metres_per_pixel(centre_latitude, record["tile_z"]), 4
-                )
-            },
-        ),
-    )
-    return item
-
-
-def _label_item(
+def _project_item(
     record: dict,
     tiles: gpd.GeoDataFrame,
     labels: gpd.GeoDataFrame,
+    source: OamImagery,
     extracted_at: datetime,
     hrefs: dict[str, Path],
     tasks: list[str],
@@ -315,8 +278,10 @@ def _label_item(
                 }
             ],
         },
-        stac_extensions=[LABEL_EXTENSION_SCHEMA],
+        stac_extensions=[LABEL_EXTENSION_SCHEMA, WEB_MAP_LINKS_SCHEMA, RASTER_EXTENSION_SCHEMA],
     )
+    # No media type: the tile server answers in JPEG or PNG depending on the imagery
+    item.add_link(pystac.Link("xyz", record["imagery_url"], title="OpenAerialMap"))
     item.add_link(
         pystac.Link(
             pystac.RelType.VIA,
@@ -325,7 +290,21 @@ def _label_item(
             title="Tasking Manager project",
         )
     )
+    centre_latitude = (tiles.total_bounds[1] + tiles.total_bounds[3]) / 2
     assets = {
+        # The label extension's rendered image: the chips the labels were drawn on, as one asset
+        "imagery": pystac.Asset(
+            href=str(hrefs["imagery"]),
+            title=f"Mosaic of the dataset chips from OpenAerialMap '{source.title}' (COG, JPEG)",
+            media_type=pystac.MediaType.COG,
+            roles=["visual", "data"],
+            extra_fields={
+                "datetime": pystac.utils.datetime_to_str(source.acquired),
+                "raster:spatial_resolution": round(
+                    metres_per_pixel(centre_latitude, record["tile_z"]), 4
+                ),
+            },
+        ),
         "labels": pystac.Asset(
             href=str(hrefs["labels"]),
             title="Labels with OSM tags and split (GeoJSON)",
@@ -354,7 +333,7 @@ def _label_item(
 def generate_stac(
     dataset_dir: Path, dataset_version: str, card_text: CardText | None = None
 ) -> Path:
-    """Write per-project imagery and label items, with tile footprints, under one Collection."""
+    """Write one item per project, holding its imagery, labels and tile footprints."""
     records = read_split_records(dataset_dir / "parquet")
     stats = json.loads((dataset_dir / "dataset_stats.json").read_text())
     extracted_at = datetime.fromisoformat(stats["generated_at"])
@@ -376,9 +355,8 @@ def generate_stac(
         title=card_text.title if card_text else dataset_dir.name,
         description=(
             f"Imagery, {noun} and train, validation and test tiles of {dataset_dir.name} "
-            f"v{dataset_version}. Each Tasking Manager project has a labels item and an imagery "
-            "item. A labels item's datetime is the label extraction time, an imagery item's the "
-            "imagery capture date."
+            f"v{dataset_version}. Each Tasking Manager project is one item. An item's datetime is "
+            "the label extraction time, its imagery asset's the imagery capture date."
         ),
         extent=pystac.Extent(
             pystac.SpatialExtent([list(tiles.total_bounds)]),
@@ -412,11 +390,9 @@ def generate_stac(
         project_records = [r for r in records if r["project_id"] == project_id]
         project_tiles = tiles[tiles["project_id"] == project_id]
         project_dir = stac_dir / f"project-{project_id}"
-        imagery_dir = stac_dir / f"project-{project_id}-imagery"
         project_dir.mkdir()
-        imagery_dir.mkdir()
         hrefs = {
-            "imagery": imagery_dir / "imagery.tif",
+            "imagery": project_dir / "imagery.tif",
             "labels": project_dir / "labels.geojson",
             "labels_parquet": project_dir / "labels.parquet",
             "tiles": project_dir / "tiles.parquet",
@@ -432,26 +408,18 @@ def generate_stac(
         metadata = json.loads((dataset_dir / f"project_{project_id}" / "metadata.json").read_text())
         source = oam_imagery(metadata["imagery_url"], metadata["bbox"])
         sources.append(source)
-        imagery_item = _imagery_item(project_records[0], project_tiles, source, hrefs["imagery"])
-        label_item = _label_item(
-            project_records[0],
-            project_tiles,
-            project_labels,
-            extracted_at,
-            hrefs,
-            tasks,
-            mapping_types[project_id],
-        )
-        label_item.add_link(
-            pystac.Link(
-                "source",
-                imagery_item,
-                media_type=pystac.MediaType.GEOJSON,
-                title="Imagery the labels were drawn on",
-                extra_fields={"label:assets": ["imagery"]},
+        collection.add_item(
+            _project_item(
+                project_records[0],
+                project_tiles,
+                project_labels,
+                source,
+                extracted_at,
+                hrefs,
+                tasks,
+                mapping_types[project_id],
             )
         )
-        collection.add_items([label_item, imagery_item])
 
     first_capture = min(source.acquired for source in sources)
     collection.extent.temporal = pystac.TemporalExtent([[first_capture, extracted_at]])
@@ -466,7 +434,7 @@ def write_published_stac(
     stac_dir: Path, links_base_url: str, assets_base_url: str, out_dir: Path
 ) -> None:
     """Write the catalogue JSON with absolute links to its published JSON and assets."""
-    # STAC Browser loads a label item's source imagery without its address, so relative links fail
+    # Assets are served from resolve/ and JSON from raw/, so asset links cannot stay relative
     links_base_url = links_base_url.rstrip("/")
     assets_base_url = assets_base_url.rstrip("/")
     collection = pystac.Collection.from_file(str(stac_dir / "collection.json"))

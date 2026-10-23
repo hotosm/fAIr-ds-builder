@@ -1,4 +1,4 @@
-# hot-oam-dataset
+# fAIr-ds-builder
 
 Builds machine learning training datasets from [HOT Tasking Manager](https://tasks.hotosm.org/)
 projects. Each dataset pairs 256x256 [OpenAerialMap](https://openaerialmap.org/) image tiles

@@ -5,15 +5,15 @@ projects. Each dataset pairs 256x256 [OpenAerialMap](https://openaerialmap.org/)
 with the [OpenStreetMap](https://www.openstreetmap.org/) features mapped on them, and is
 published on Hugging Face with a STAC catalogue.
 
-Guides: [hotosm.github.io/tm-oam-ds-builder](https://hotosm.github.io/tm-oam-ds-builder/). The
-repository is `tm-oam-ds-builder`, and the command it installs is `hot-oam-dataset`.
+Guides: [hotosm.github.io/fAIr-ds-builder](https://hotosm.github.io/fAIr-ds-builder/). The
+repository is `fAIr-ds-builder`, and the command it installs is `hot-oam-dataset`.
 
 ## Install
 
 With [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv tool install git+https://github.com/hotosm/tm-oam-ds-builder
+uv tool install git+https://github.com/hotosm/fAIr-ds-builder
 ```
 
 Set `TM_TOKEN` for private Tasking Manager projects and `HF_TOKEN` (write) to publish, or put
@@ -67,12 +67,12 @@ card:
     - diameter_crown is a mapper estimate.
 ```
 
-The [config reference](https://hotosm.github.io/tm-oam-ds-builder/reference/) explains every key.
+The [config reference](https://hotosm.github.io/fAIr-ds-builder/reference/) explains every key.
 
 ## Commands
 
 Run `hot-oam-dataset --help` for every option. The
-[reference](https://hotosm.github.io/tm-oam-ds-builder/reference/) lists the commands, config
+[reference](https://hotosm.github.io/fAIr-ds-builder/reference/) lists the commands, config
 keys and build steps.
 
 ## Development

@@ -91,7 +91,7 @@ Each project sets this OpenAerialMap imagery for its mappers, and the tiles come
 The splits are spatial. Each project's tiles are grouped into contiguous regions, and each
 region goes whole to train, validation or test, as listed under Split method above. For model
 evaluation we recommend making your own split, as described in
-[Make your own split](https://hotosm.github.io/tm-oam-ds-builder/guides/own-split/).
+[Make your own split](https://hotosm.github.io/fAIr-ds-builder/guides/own-split/).
 
 ![Train, validation and test tiles per project](https://huggingface.co/datasets/<repo>/resolve/v<version>/stac/split_map.png)
 
@@ -136,7 +136,7 @@ Each project is one item holding a Cloud Optimized GeoTIFF of its tiles, the lab
 tile footprints with their split.
 [Open in STAC Browser](https://radiantearth.github.io/stac-browser/#/external/huggingface.co/datasets/<repo>/raw/v<version>/stac/collection.json)
 to see the labels over the imagery, or follow the
-[QGIS guide](https://hotosm.github.io/tm-oam-ds-builder/guides/qgis/) to open them in QGIS.
+[QGIS guide](https://hotosm.github.io/fAIr-ds-builder/guides/qgis/) to open them in QGIS.
 
 ## Known limitations
 
@@ -149,4 +149,4 @@ to see the labels over the imagery, or follow the
 | Imagery | [OpenAerialMap](https://openaerialmap.org/) | CC-BY 4.0, attribute contributors of Open Imagery Network |
 | Labels | [OpenStreetMap](https://www.openstreetmap.org/) | ODbL 1.0, attribute OpenStreetMap contributors |
 
-Built with [tm-oam-ds-builder](https://github.com/hotosm/tm-oam-ds-builder).
+Built with [fAIr-ds-builder](https://github.com/hotosm/fAIr-ds-builder).

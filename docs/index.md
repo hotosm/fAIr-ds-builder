@@ -1,4 +1,4 @@
-# tm-oam-ds-builder
+# fAIr-ds-builder
 
 Training datasets from [HOT Tasking Manager](https://tasks.hotosm.org/) projects: 256x256
 [OpenAerialMap](https://openaerialmap.org/) image tiles with the

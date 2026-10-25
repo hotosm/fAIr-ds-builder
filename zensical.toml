@@ -1,12 +1,12 @@
 [project]
-site_name = "tm-oam-ds-builder"
-site_url = "https://hotosm.github.io/tm-oam-ds-builder/"
+site_name = "fAIr-ds-builder"
+site_url = "https://hotosm.github.io/fAIr-ds-builder/"
 site_description = "Training datasets from HOT Tasking Manager projects, OpenAerialMap imagery and OpenStreetMap labels."
 site_author = "Humanitarian OpenStreetMap Team"
 copyright = "Copyright &copy; 2026 Humanitarian OpenStreetMap Team"
 
-repo_url = "https://github.com/hotosm/tm-oam-ds-builder"
-repo_name = "hotosm/tm-oam-ds-builder"
+repo_url = "https://github.com/hotosm/fAIr-ds-builder"
+repo_name = "hotosm/fAIr-ds-builder"
 edit_uri = "edit/master/docs/"
 
 nav = [
@@ -53,7 +53,7 @@ toggle.name = "Switch to system preference"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
-link = "https://github.com/hotosm/tm-oam-ds-builder"
+link = "https://github.com/hotosm/fAIr-ds-builder"
 
 [project.markdown_extensions]
 admonition = {}

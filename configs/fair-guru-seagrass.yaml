@@ -1,0 +1,55 @@
+output_dir: fAIr-guru-td-seagrass
+project_ids: 55908,55909,55910,55911
+feature_type: seamark:type
+tag_values: [seagrass]
+geometry_types: [polygon]
+tm_mapping_type: OTHER
+zoom: 23
+burn_binary_masks: true
+drop_small_chips: false
+imagery_url: https://tiles.openaerialmap.org/6a029b68ef395bce007be43a/0/6a029b68ef395bce007be43b/{z}/{x}/{y}
+label_files: https://huggingface.co/datasets/hotosm/fAIr-guru-td-seagrass/resolve/main/label_files
+dataset_version: 0.1.1
+split:
+  regions_per_project: 10
+  validation_regions: 1
+  test_regions: 1
+  buffer_meters: 0
+  exclude_shared_features: false
+fair:
+  user_id: hot
+  provider: hot
+card:
+  repo_id: hotosm/fAIr-guru-td-seagrass
+  title: 'fAIr Open Mapping Gurus: seagrass'
+  label_noun: seagrass areas
+  tasks: [segmentation]
+  label_source:
+    name: OSM Sandbox
+    attribution: HOT OpenStreetMap sandbox contributors
+  summary: >-
+    Seagrass segmentation training data from the [Open Mapping Gurus](https://hotosm.github.io/fAIr/datasets/#open-mapping-gurus)
+    programme, built from four Timor-Leste projects. Drone imagery from OpenAerialMap is paired
+    with seagrass areas mapped and validated in HOT Tasking Manager.
+  selection: >-
+    The four projects cover one drone image and list `LAND_USE` and `OTHER` as mapping types.
+    Mappers drew seagrass as areas tagged `area=yes` and `seamark:type=seagrass` and saved them
+    to the OSM Sandbox, as the [project instructions](https://tasks.hotosm.org/projects/55908/instructions)
+    set out, so the labels are not part of OpenStreetMap. They come from the
+    per-chip labels of [vhr-seagrass-segmentation](https://huggingface.co/datasets/hotosm/vhr-seagrass-segmentation),
+    joined back into whole areas by their sandbox id, and are published under `label_files/`.
+    Tiles come only from task squares marked `VALIDATED` that lie inside the area covered by
+    that dataset's chips. Masks are binary rasters of the areas.
+  limitations:
+  - >-
+    The labels live in the OSM Sandbox, so they cannot be compared with or updated from
+    OpenStreetMap.
+  - >-
+    9 to 13% of each project's validated area has no labels in vhr-seagrass-segmentation and is
+    left out.
+  - >-
+    All tiles come from one image, captured on 30 March 2026 according to its OpenAerialMap
+    record, so validation and test measure new areas of that same image.
+  - >-
+    496 of the 16,876 seagrass areas (3%) carry a mapper `note` such as `Unsure` or `check if
+    seagrass`. They are kept as labels, and the note is in their tags.

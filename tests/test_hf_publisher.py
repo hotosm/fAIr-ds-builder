@@ -306,7 +306,7 @@ def test_stats_block_names_the_tag_values(dataset_dir, tag_values, expected, chi
 
     result = _upsert_generated_stats_block(CARD_TEMPLATE, _generated(dataset_dir, [_row(chip)]))
 
-    assert f"Labels are OpenStreetMap features tagged {expected}, and a label" in result
+    assert f"Labels are features tagged {expected}, and a label" in result
 
 
 def test_stats_block_names_the_tags_every_label_also_carries(dataset_dir, chip):

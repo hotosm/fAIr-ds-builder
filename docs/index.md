@@ -23,9 +23,11 @@ programme, where community mappers create training data for fAIr, all in one [ST
 | [fAIr-guru-td-road-surface](https://huggingface.co/datasets/hotosm/fAIr-guru-td-road-surface) | Roads by `surface` | Segmentation, classification | 19 | 40695, 50793, 60363 |
 | [fAIr-guru-td-trees](https://huggingface.co/datasets/hotosm/fAIr-guru-td-trees) | Tree points and tree groups | Detection | 20 | 50661 |
 | [fAIr-guru-td-solar](https://huggingface.co/datasets/hotosm/fAIr-guru-td-solar) | Rooftop solar panels | Segmentation | 21 | 50661 |
+| [fAIr-guru-td-seagrass](https://huggingface.co/datasets/hotosm/fAIr-guru-td-seagrass) | Seagrass areas, with masks | Segmentation | 23 | 55908, 55909, 55910, 55911 |
 
 ## Licensing
 
 Imagery CC-BY 4.0, "contributors of Open Imagery Network" ([source](https://openaerialmap.org/about/)).
-Labels ODbL 1.0, "OpenStreetMap contributors" ([source](https://www.openstreetmap.org/copyright)).
+Labels ODbL 1.0, "OpenStreetMap contributors" ([source](https://www.openstreetmap.org/copyright)),
+except seagrass, mapped in the OSM Sandbox: ODbL 1.0, "HOT OpenStreetMap sandbox contributors".
 Tooling GPL-3.0-or-later.

@@ -829,7 +829,7 @@ def _class_lines(class_counts: dict, dataset_dir: Path, build_stats: dict) -> li
         "",
         "### Classes",
         "",
-        f"Labels are OpenStreetMap features tagged "
+        f"Labels are features tagged "
         f"{_selected_tags(tag, build_stats, dataset_dir)}, and a label's class is its `{tag}` "
         "value." + (f" The wiki describes how each tag is mapped: {wiki}." if wiki else ""),
         "",

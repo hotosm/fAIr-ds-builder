@@ -214,6 +214,11 @@ def test_stac_collection_has_one_item_per_project_with_imagery_and_labels(
 
     collection = pystac.Collection.from_file(str(collection_path))
     assert collection.title == "Trees"
+    assert "Labels: ODbL-1.0, OpenStreetMap contributors" in [
+        link.title for link in collection.get_links("license")
+    ]
+    osm = next(p for p in collection.providers if p.name == "OpenStreetMap contributors")
+    assert osm.url == "https://www.openstreetmap.org/copyright"
     assert collection.description.startswith("Imagery, trees and shrubs and train")
     assert collection.summaries.get_list("label:tasks") == ["detection", "classification"]
     assert collection.summaries.get_list("dataset:zoom") == [ZOOM]
@@ -221,6 +226,7 @@ def test_stac_collection_has_one_item_per_project_with_imagery_and_labels(
     assert set(items) == {"project-1", "project-2"}
 
     project_item = items["project-1"]
+    assert project_item.properties["description"].startswith("OpenStreetMap `natural` labels")
     assert set(project_item.stac_extensions) == {
         LABEL_EXTENSION_SCHEMA,
         WEB_MAP_LINKS_SCHEMA,
@@ -292,3 +298,46 @@ def test_stac_collection_has_one_item_per_project_with_imagery_and_labels(
         "Labels",
     }
     assert (Path(collection_path).parent / "split_map.png").stat().st_size > 0
+
+
+def test_stac_names_the_card_label_source_in_licence_providers_and_items(
+    tmp_path, monkeypatch, mocker
+):
+    records = [
+        _record(tmp_path, 100, 200, "train", 40),
+        _record(tmp_path, 300, 400, "test", 60, project_id=2),
+    ]
+    dataset_dir = _write_dataset(tmp_path, records)
+    monkeypatch.chdir(tmp_path)
+    mocker.patch.object(
+        stac_export,
+        "oam_imagery",
+        return_value=OamImagery("Bay", datetime(2026, 3, 30, tzinfo=UTC)),
+    )
+    card_text = CardText.from_mapping(
+        {
+            "repo_id": "hotosm/seagrass",
+            "title": "Seagrass",
+            "label_noun": "seagrass areas",
+            "tasks": ["segmentation"],
+            "summary": "Seagrass data.",
+            "selection": "Areas.",
+            "limitations": [],
+            "label_source": {
+                "name": "OSM Sandbox",
+                "attribution": "HOT OpenStreetMap sandbox contributors",
+            },
+        }
+    )
+
+    collection = pystac.Collection.from_file(
+        str(generate_stac(Path(dataset_dir.name), "0.1.0", card_text=card_text))
+    )
+
+    licence_titles = [link.title for link in collection.get_links("license")]
+    assert "Labels: ODbL-1.0, HOT OpenStreetMap sandbox contributors" in licence_titles
+    providers = {provider.name: provider for provider in collection.providers}
+    assert providers["HOT OpenStreetMap sandbox contributors"].url is None
+    assert "OpenStreetMap contributors" not in providers
+    item = next(collection.get_items())
+    assert item.properties["description"].startswith("OSM Sandbox `natural` labels")

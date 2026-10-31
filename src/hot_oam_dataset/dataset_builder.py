@@ -14,7 +14,10 @@ import httpx
 import rasterio
 from geomltoolkits.downloader import osm as osm_downloader
 from geomltoolkits.downloader import tms as tms_downloader
+from geomltoolkits.geometry.tiles import split_geojson_by_tiles
 from geomltoolkits.raster.burn import burn_labels
+from shapely.geometry import mapping, shape
+from shapely.ops import unary_union
 
 from hot_oam_dataset.feature_spec import (
     DEFAULT_FEATURE_TYPE,
@@ -40,6 +43,8 @@ PROBE_BACKOFF_BASE = 2
 IMPORT_ATTRIBUTE_TAGS = frozenset(
     {"osm_uid", "osm_user", "osm_version", "osm_changeset", "osm_timestamp"}
 )
+LABEL_FILE = "project_{project_id}_labels.geojson"
+COVERAGE_FILE = "project_{project_id}_coverage.geojson"
 
 
 @dataclass
@@ -56,6 +61,8 @@ class DatasetConfig:
     geometry_types: list[str] | None = None
     tag_values: list[str] | None = None
     required_tags: list[str] | None = None
+    label_files: str | None = None
+    drop_small_chips: bool = True
 
     @property
     def feature_spec(self) -> FeatureSpec:
@@ -139,13 +146,51 @@ def build_project_dataset(project: TaskingManagerProject, config: DatasetConfig)
             {
                 "type": "Feature",
                 "properties": {"project_id": project.project_id},
-                "geometry": project.validated_area,
+                "geometry": _tiled_area(project, config),
             }
         ],
     }
     aoi_path.write_text(json.dumps(aoi_geojson))
 
     asyncio.run(_download_chips_and_labels(project, project_dir, aoi_path, config))
+
+
+def _read_label_file(label_files: str, name: str) -> dict:
+    location = f"{label_files.rstrip('/')}/{name}"
+    if location.startswith(("http://", "https://")):
+        response = httpx.get(location, timeout=60, follow_redirects=True)
+        response.raise_for_status()
+        return response.json()
+    return json.loads(Path(location).read_text())
+
+
+def _tiled_area(project: TaskingManagerProject, config: DatasetConfig) -> dict:
+    """Validated tasks, narrowed to where the label files were mapped when they are used."""
+    if not config.label_files:
+        return project.validated_area
+    coverage = _read_label_file(
+        config.label_files, COVERAGE_FILE.format(project_id=project.project_id)
+    )
+    mapped = unary_union([shape(feature["geometry"]) for feature in coverage["features"]])
+    area = shape(project.validated_area).intersection(mapped)
+    if area.is_empty:
+        raise ValueError(
+            f"Project {project.project_id}: label coverage does not overlap its validated tasks"
+        )
+    return mapping(area)
+
+
+def _split_file_labels(
+    label_files: str, project_id: int, tiles_geojson_path: Path, osm_work_dir: Path, prefix: str
+):
+    """Cut the project's label file per tile, laid out as the Raw Data API download is."""
+    labels = _read_label_file(label_files, LABEL_FILE.format(project_id=project_id))
+    osm_work_dir.mkdir(parents=True, exist_ok=True)
+    result_path = osm_work_dir / "osm-result.geojson"
+    result_path.write_text(json.dumps(labels))
+    split_geojson_by_tiles(
+        str(result_path), str(tiles_geojson_path), str(osm_work_dir / "split"), prefix
+    )
 
 
 async def _download_chips_and_labels(
@@ -177,28 +222,33 @@ async def _download_chips_and_labels(
         logger.error("tiles.geojson not found for project #%d", project.project_id)
         return
 
-    osm_work_dir = str(project_dir / "_osm_tmp")
-
-    logger.info("Downloading OSM label data for project #%d", project.project_id)
-
+    osm_work_dir = project_dir / "_osm_tmp"
     spec = config.feature_spec
 
-    logger.info(
-        "Requesting OSM tag '%s' as %s geometry",
-        spec.osm_tag,
-        "/".join(spec.geometry_types),
-    )
-
-    await osm_downloader.download_osm_data(
-        geojson=str(tiles_geojson_path),
-        out=osm_work_dir,
-        filters=spec.raw_data_filters(),
-        geometry_types=list(spec.geometry_types),
-        use_st_within=False,  # edge tiles otherwise lose partially visible features
-        dump_results=True,
-        split_output_by_tiles=True,
-        split_prefix=config.prefix,
-    )
+    if config.label_files:
+        logger.info(
+            "Reading labels for project #%d from %s", project.project_id, config.label_files
+        )
+        _split_file_labels(
+            config.label_files, project.project_id, tiles_geojson_path, osm_work_dir, config.prefix
+        )
+    else:
+        logger.info(
+            "Requesting OSM tag '%s' as %s geometry for project #%d",
+            spec.osm_tag,
+            "/".join(spec.geometry_types),
+            project.project_id,
+        )
+        await osm_downloader.download_osm_data(
+            geojson=str(tiles_geojson_path),
+            out=str(osm_work_dir),
+            filters=spec.raw_data_filters(),
+            geometry_types=list(spec.geometry_types),
+            use_st_within=False,  # edge tiles otherwise lose partially visible features
+            dump_results=True,
+            split_output_by_tiles=True,
+            split_prefix=config.prefix,
+        )
 
     _flatten_label_output(project_dir)
     remove_import_attribute_tags(project_dir / "labels")
@@ -207,7 +257,11 @@ async def _download_chips_and_labels(
         _burn_project_binary_masks(project_dir, config)
 
     stats = validate_and_clean_project(
-        project_dir, config.prefix, project.project_id, config.feature_spec.osm_tag
+        project_dir,
+        config.prefix,
+        project.project_id,
+        config.feature_spec.osm_tag,
+        config.drop_small_chips,
     )
     _update_metadata_with_stats(project_dir, stats)
 
@@ -294,12 +348,15 @@ def _delete_chip(chip_path: Path):
         path.unlink(missing_ok=True)
 
 
-def _remove_corrupt_chips(chips_dir: Path, prefix: str) -> tuple[set[str], int]:
+def _remove_corrupt_chips(
+    chips_dir: Path, prefix: str, drop_small_chips: bool
+) -> tuple[set[str], int]:
     valid_stems: set[str] = set()
     removed_count = 0
+    minimum_bytes = MINIMUM_VALID_CHIP_BYTES if drop_small_chips else 1
 
     for chip in list(chips_dir.glob(f"{prefix}-*.tif")):
-        if chip.stat().st_size < MINIMUM_VALID_CHIP_BYTES:
+        if chip.stat().st_size < minimum_bytes:
             _delete_chip(chip)
             removed_count += 1
         else:
@@ -368,12 +425,16 @@ def _remove_unpaired_chips(chips_dir: Path, labels_dir: Path, valid_chip_stems: 
 
 
 def validate_and_clean_project(
-    project_dir: Path, prefix: str, project_id: int, feature_type: str = DEFAULT_FEATURE_TYPE
+    project_dir: Path,
+    prefix: str,
+    project_id: int,
+    feature_type: str = DEFAULT_FEATURE_TYPE,
+    drop_small_chips: bool = True,
 ) -> dict:
     chips_dir = project_dir / "chips"
     labels_dir = project_dir / "labels"
 
-    valid_chip_stems, removed_corrupt = _remove_corrupt_chips(chips_dir, prefix)
+    valid_chip_stems, removed_corrupt = _remove_corrupt_chips(chips_dir, prefix, drop_small_chips)
 
     if removed_corrupt:
         logger.info("Project #%d: removed %d corrupt/empty chips", project_id, removed_corrupt)
@@ -464,6 +525,8 @@ def _save_project_metadata(
         "zoom": config.zoom,
         "tile_size_pixels": TILE_SIZE_PIXELS,
         "label_buffer_meters": config.label_buffer_meters,
+        "label_files": config.label_files,
+        "drop_small_chips": config.drop_small_chips,
     }
     (project_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 

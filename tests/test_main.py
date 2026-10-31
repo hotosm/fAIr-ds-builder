@@ -1,6 +1,27 @@
 import pytest
 
 from hot_oam_dataset import main as cli
+from hot_oam_dataset.tm_client import TaskingManagerProject
+
+
+def _project(project_id: int, imagery_url: str) -> TaskingManagerProject:
+    return TaskingManagerProject(
+        project_id=project_id,
+        name="Seagrass",
+        status="ARCHIVED",
+        percent_mapped=100,
+        percent_validated=100,
+        imagery_url=imagery_url,
+        area_of_interest={},
+        validated_area={},
+        validated_task_count=1,
+        total_task_count=1,
+        bbox=[0, 0, 1, 1],
+        mapping_types=["OTHER"],
+        organisation="HOT",
+        created="2026-01-01T00:00:00Z",
+        country="Timor-Leste",
+    )
 
 
 def test_tag_values_reach_the_build_config(tmp_path, mocker):
@@ -50,6 +71,21 @@ def test_required_tags_narrow_the_request_to_features_carrying_both(tmp_path, mo
     assert build.call_args.args[1].feature_spec.raw_data_filters() == {
         "tags": {"all_geometry": {"join_and": {"surface": [], "highway": []}}}
     }
+
+
+def test_imagery_url_replaces_the_tasking_manager_imagery_of_every_project(tmp_path, mocker):
+    projects = [
+        _project(1, "https://tm.example/a/{z}/{x}/{y}@4x"),
+        _project(2, "https://tm.example/b/{z}/{x}/{y}"),
+    ]
+    mocker.patch.object(cli, "fetch_projects_by_ids", return_value=projects)
+    mocker.patch.object(cli, "_print_projects_table")
+    build = mocker.patch.object(cli, "build_all_projects", return_value=[])
+    oam_tiles = "https://tiles.openaerialmap.org/a/0/b/{z}/{x}/{y}"
+
+    cli.main(["--output-dir", str(tmp_path), "--project-ids", "1,2", "--imagery-url", oam_tiles])
+
+    assert [project.imagery_url for project in build.call_args.args[0]] == [oam_tiles, oam_tiles]
 
 
 @pytest.mark.parametrize("arguments", [["--negative-ratio", "-1"], ["--zoom", "nineteen"]])

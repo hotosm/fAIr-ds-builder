@@ -23,7 +23,7 @@ from rasterio.transform import from_origin
 from rasterio.windows import Window
 from shapely.geometry import box, shape
 
-from hot_oam_dataset.dataset_card import CardText, metres_per_pixel
+from hot_oam_dataset.dataset_card import CardText, LabelSource, metres_per_pixel
 from hot_oam_dataset.feature_spec import dataset_wiki_pages
 from hot_oam_dataset.oam_metadata import OamImagery, oam_imagery
 from hot_oam_dataset.split_generator import SPLIT_NAMES
@@ -57,38 +57,46 @@ PARQUET_COLUMNS = [
     "class_counts",
     "label_geojson",
 ]
-# STAC Browser needs a single SPDX id; ODbL is the stricter term, the links name each part's license
-LICENSE_LINKS = [
-    pystac.Link(
-        pystac.RelType.LICENSE,
-        "https://creativecommons.org/licenses/by/4.0/",
-        media_type=pystac.MediaType.HTML,
-        title="Imagery: CC-BY-4.0, contributors of Open Imagery Network",
-    ),
-    pystac.Link(
-        pystac.RelType.LICENSE,
-        "https://opendatacommons.org/licenses/odbl/1-0/",
-        media_type=pystac.MediaType.HTML,
-        title="Labels: ODbL-1.0, OpenStreetMap contributors",
-    ),
-]
-PROVIDERS = [
-    pystac.Provider(
-        "OpenAerialMap contributors",
-        roles=[pystac.ProviderRole.PRODUCER, pystac.ProviderRole.LICENSOR],
-        url="https://openaerialmap.org/",
-    ),
-    pystac.Provider(
-        "OpenStreetMap contributors",
-        roles=[pystac.ProviderRole.PRODUCER, pystac.ProviderRole.LICENSOR],
-        url="https://www.openstreetmap.org/copyright",
-    ),
-    pystac.Provider(
-        "Humanitarian OpenStreetMap Team",
-        roles=[pystac.ProviderRole.PROCESSOR, pystac.ProviderRole.HOST],
-        url="https://tasks.hotosm.org/",
-    ),
-]
+OSM_LABEL_SOURCE = LabelSource(name="OpenStreetMap", attribution="OpenStreetMap contributors")
+OSM_COPYRIGHT_URL = "https://www.openstreetmap.org/copyright"
+
+
+def _license_links(labels: LabelSource) -> list[pystac.Link]:
+    """Each part's license; STAC Browser shows one SPDX id, so the collection uses ODbL."""
+    return [
+        pystac.Link(
+            pystac.RelType.LICENSE,
+            "https://creativecommons.org/licenses/by/4.0/",
+            media_type=pystac.MediaType.HTML,
+            title="Imagery: CC-BY-4.0, contributors of Open Imagery Network",
+        ),
+        pystac.Link(
+            pystac.RelType.LICENSE,
+            "https://opendatacommons.org/licenses/odbl/1-0/",
+            media_type=pystac.MediaType.HTML,
+            title=f"Labels: ODbL-1.0, {labels.attribution}",
+        ),
+    ]
+
+
+def _providers(labels: LabelSource) -> list[pystac.Provider]:
+    return [
+        pystac.Provider(
+            "OpenAerialMap contributors",
+            roles=[pystac.ProviderRole.PRODUCER, pystac.ProviderRole.LICENSOR],
+            url="https://openaerialmap.org/",
+        ),
+        pystac.Provider(
+            labels.attribution,
+            roles=[pystac.ProviderRole.PRODUCER, pystac.ProviderRole.LICENSOR],
+            url=OSM_COPYRIGHT_URL if labels == OSM_LABEL_SOURCE else None,
+        ),
+        pystac.Provider(
+            "Humanitarian OpenStreetMap Team",
+            roles=[pystac.ProviderRole.PROCESSOR, pystac.ProviderRole.HOST],
+            url="https://tasks.hotosm.org/",
+        ),
+    ]
 
 
 def read_split_records(parquet_dir: Path) -> list[dict]:
@@ -240,10 +248,11 @@ def _project_item(
     hrefs: dict[str, Path],
     tasks: list[str],
     mapping_types: list[str],
+    label_source_name: str,
 ) -> pystac.Item:
     class_counts = Counter(value for value in labels[LABEL_CLASS_PROPERTY] if value)
     description = (
-        f"OpenStreetMap `{record['feature_type']}` labels from Tasking Manager "
+        f"{label_source_name} `{record['feature_type']}` labels from Tasking Manager "
         f"project {record['project_id']}."
     )
     item = pystac.Item(
@@ -339,6 +348,9 @@ def generate_stac(
     extracted_at = datetime.fromisoformat(stats["generated_at"])
     has_masks = any(r["mask"] and r["mask"]["path"] for r in records)
     tasks = list(card_text.tasks) if card_text else ["segmentation" if has_masks else "detection"]
+    label_source = (
+        card_text.label_source if card_text and card_text.label_source else OSM_LABEL_SOURCE
+    )
     stac_dir = (dataset_dir / STAC_DIRNAME).resolve()
     if stac_dir.exists():
         shutil.rmtree(stac_dir)
@@ -363,11 +375,11 @@ def generate_stac(
             pystac.TemporalExtent([[extracted_at, extracted_at]]),
         ),
         license="ODbL-1.0",
-        providers=PROVIDERS,
+        providers=_providers(label_source),
         keywords=[stats["feature_type"], "openstreetmap", "openaerialmap", "training-data"],
         stac_extensions=[LABEL_EXTENSION_SCHEMA],
     )
-    collection.add_links(LICENSE_LINKS)
+    collection.add_links(_license_links(label_source))
     collection.add_links(
         [
             pystac.Link(
@@ -418,6 +430,7 @@ def generate_stac(
                 hrefs,
                 tasks,
                 mapping_types[project_id],
+                label_source.name,
             )
         )
 

@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import logging
 import os
 import sys
@@ -8,7 +9,11 @@ from pathlib import Path
 import yaml
 
 from hot_oam_dataset import __version__
-from hot_oam_dataset.dataset_builder import DatasetConfig, build_all_projects
+from hot_oam_dataset.dataset_builder import (
+    MINIMUM_VALID_CHIP_BYTES,
+    DatasetConfig,
+    build_all_projects,
+)
 from hot_oam_dataset.dataset_card import CardText
 from hot_oam_dataset.fair_catalog import FAIR_API_KEY_ENV, FairSettings, publish_to_fair
 from hot_oam_dataset.feature_spec import (
@@ -285,12 +290,41 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--imagery-url",
+        default=None,
+        metavar="TMS",
+        help=(
+            "Tile URL ({z}/{x}/{y}, 256 px tiles) for every project's imagery, used in place of "
+            "the Tasking Manager imagery URL (default: each project's Tasking Manager imagery)"
+        ),
+    )
+    parser.add_argument(
+        "--label-files",
+        default=None,
+        metavar="DIR_OR_URL",
+        help=(
+            "Folder or URL holding project_<id>_labels.geojson and project_<id>_coverage.geojson. "
+            "Labels are read from these files in place of OpenStreetMap, and tiles are kept only "
+            "inside the coverage (default: OpenStreetMap through the HOT Raw Data API)"
+        ),
+    )
+    parser.add_argument(
         "--label-buffer-meters",
         type=float,
         default=0.0,
         help=(
             "Widen label geometries by this many metres before burning masks. "
             "Line features need a buffer to produce usable masks (default: 0)"
+        ),
+    )
+    parser.add_argument(
+        "--drop-small-chips",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            f"Remove chips under {MINIMUM_VALID_CHIP_BYTES:,} bytes, which are usually failed "
+            "downloads. Turn off for "
+            "imagery whose valid tiles compress below that, such as calm water (default: on)"
         ),
     )
     parser.add_argument(
@@ -483,6 +517,10 @@ def main(argv: list[str] | None = None):
     )
 
     projects = _collect_projects(args, spec, output_dir)
+    if args.imagery_url:
+        projects = [
+            dataclasses.replace(project, imagery_url=args.imagery_url) for project in projects
+        ]
 
     if not projects:
         logger.warning("No projects to build")
@@ -504,6 +542,8 @@ def main(argv: list[str] | None = None):
         geometry_types=args.geometry_types,
         tag_values=args.tag_values,
         required_tags=args.require_tags,
+        label_files=args.label_files,
+        drop_small_chips=args.drop_small_chips,
     )
     failed_project_ids = build_all_projects(projects, config, dataset_version=args.dataset_version)
     if failed_project_ids:

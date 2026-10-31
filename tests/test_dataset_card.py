@@ -151,6 +151,36 @@ def test_packaged_card_links_the_release_in_stac_browser():
     assert "<limitations>" not in rendered
 
 
+def test_card_label_source_replaces_openstreetmap_as_the_source_of_the_labels():
+    sandbox = {"name": "the OSM Sandbox", "attribution": "HOT OpenStreetMap sandbox contributors"}
+    card_text = CardText.from_mapping(CARD_MAPPING | {"label_source": sandbox})
+
+    card = render_card_text(read_card_template(), card_text, "0.1.0")
+
+    assert "The labels are the OSM Sandbox features" in card
+    assert (
+        "| Labels | the OSM Sandbox | ODbL 1.0, attribute HOT OpenStreetMap sandbox contributors |"
+        in card
+    )
+    assert "Organised Editing Guidelines" not in card
+    assert "[OpenStreetMap](https://www.openstreetmap.org/)" not in card
+
+
+def test_card_without_label_source_names_openstreetmap():
+    card = render_card_text(read_card_template(), CardText.from_mapping(CARD_MAPPING), "0.1.0")
+
+    assert "The labels are [OpenStreetMap](https://www.openstreetmap.org/) features" in card
+    assert "Organised Editing Guidelines" in card
+
+
+@pytest.mark.parametrize(
+    "label_source", [{"name": "Sandbox"}, {"name": "", "attribution": "HOT"}, "Sandbox"]
+)
+def test_card_label_source_needs_a_name_and_attribution(label_source):
+    with pytest.raises(ValueError, match="label_source"):
+        CardText.from_mapping(CARD_MAPPING | {"label_source": label_source})
+
+
 def test_detection_card_drops_the_template_task_ids():
     card_text = CardText.from_mapping({**CARD_MAPPING, "tasks": ["detection"]})
 

@@ -88,6 +88,7 @@ just dataset configs/fair-guru-trees.yaml
 
 - Imagery: OpenAerialMap, CC-BY 4.0, "contributors of Open Imagery Network" ([source](https://openaerialmap.org/about/))
 - Labels: OpenStreetMap, ODbL 1.0, "OpenStreetMap contributors" ([source](https://www.openstreetmap.org/copyright))
+- Seagrass labels: OSM Sandbox, ODbL 1.0, "HOT OpenStreetMap sandbox contributors"
 - Project metadata: [HOT Tasking Manager API](https://tasking-manager-production-api.hotosm.org/api/docs)
 
 Tooling: GPL-3.0-or-later.

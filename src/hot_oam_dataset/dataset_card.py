@@ -20,6 +20,13 @@ CARD_LIMITATIONS_PLACEHOLDER = "<limitations>"
 CARD_AUTO_STATS_START = "<!-- AUTO_STATS_START -->"
 CARD_AUTO_STATS_END = "<!-- AUTO_STATS_END -->"
 DEFAULT_SAMPLE_TILES = 6
+# Template text that names OpenStreetMap as the label source, swapped for a card's own source
+OSM_LABEL_SOURCE = "[OpenStreetMap](https://www.openstreetmap.org/)"
+OSM_LABEL_ATTRIBUTION = "attribute OpenStreetMap contributors"
+OSM_EDITING_GUIDELINES = (
+    " Coordinated mapping of this kind falls under the OpenStreetMap\nFoundation's "
+    "[Organised Editing Guidelines](https://osmfoundation.org/wiki/Organised_Editing_Guidelines)."
+)
 # STAC label extension tasks, with the Hugging Face task categories and ids each one implies
 CARD_TASKS = {
     "segmentation": {
@@ -46,6 +53,14 @@ def generic_card_template() -> str:
 
 
 @dataclass(frozen=True)
+class LabelSource:
+    """Where the labels were mapped, and who to attribute them to."""
+
+    name: str
+    attribution: str
+
+
+@dataclass(frozen=True)
 class CardText:
     """The parts of a dataset card written by hand, read from the `card` key of a config."""
 
@@ -57,6 +72,7 @@ class CardText:
     selection: str
     limitations: tuple[str, ...]
     sample_tiles: int = DEFAULT_SAMPLE_TILES
+    label_source: LabelSource | None = None
 
     @classmethod
     def from_mapping(cls, mapping: dict) -> "CardText":
@@ -69,7 +85,7 @@ class CardText:
             "selection",
             "limitations",
         }
-        optional = {"sample_tiles"}
+        optional = {"sample_tiles", "label_source"}
         if not expected <= set(mapping) <= expected | optional:
             missing, unknown = expected - set(mapping), set(mapping) - expected - optional
             msg = f"card needs exactly {sorted(expected)}; missing {sorted(missing)}, "
@@ -83,6 +99,13 @@ class CardText:
         sample_tiles = mapping.get("sample_tiles", DEFAULT_SAMPLE_TILES)
         if not isinstance(sample_tiles, int) or isinstance(sample_tiles, bool) or sample_tiles < 0:
             raise ValueError("card sample_tiles must be a whole number, 0 to leave samples out")
+        label_source = mapping.get("label_source")
+        if label_source is not None and (
+            not isinstance(label_source, dict)
+            or set(label_source) != {"name", "attribution"}
+            or not all(isinstance(value, str) and value.strip() for value in label_source.values())
+        ):
+            raise ValueError("card label_source needs a non-empty name and attribution")
         text_fields = expected - {"limitations", "tasks"}
         empty = sorted(key for key in text_fields if not str(mapping[key]).strip())
         if empty:
@@ -92,6 +115,7 @@ class CardText:
             tasks=tuple(tasks),
             limitations=tuple(line.strip() for line in limitations),
             sample_tiles=sample_tiles,
+            label_source=LabelSource(**label_source) if label_source else None,
         )
 
 
@@ -189,6 +213,15 @@ def _description(card_text: CardText) -> str:
     )
 
 
+def _with_label_source(text: str, source: LabelSource) -> str:
+    for fragment in (OSM_LABEL_SOURCE, OSM_LABEL_ATTRIBUTION, OSM_EDITING_GUIDELINES):
+        if fragment not in text:
+            raise ValueError(f"card template no longer holds {fragment!r}")
+    text = text.replace(OSM_EDITING_GUIDELINES, "")
+    text = text.replace(OSM_LABEL_ATTRIBUTION, f"attribute {source.attribution}")
+    return text.replace(OSM_LABEL_SOURCE, source.name)
+
+
 def render_card_text(template: str, card_text: CardText, dataset_version: str) -> str:
     """Fill the template's description block, repo id and task from the config's card text."""
     pattern = re.compile(
@@ -203,6 +236,8 @@ def render_card_text(template: str, card_text: CardText, dataset_version: str) -
     text = text.replace(
         CARD_LIMITATIONS_PLACEHOLDER, "\n".join(f"- {line}" for line in card_text.limitations)
     )
+    if card_text.label_source:
+        text = _with_label_source(text, card_text.label_source)
     text = text.replace(CARD_REPO_PLACEHOLDER, card_text.repo_id)
     text = text.replace(CARD_VERSION_PLACEHOLDER, dataset_version)
 

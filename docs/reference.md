@@ -28,6 +28,9 @@ Top-level keys are the command options with underscores. Command-line flags over
 | `tm_mapping_type` | Tasking Manager mapping type the projects are checked against |
 | `zoom` | Tile zoom level |
 | `burn_binary_masks` | Write a binary mask per tile (0 background, 255 feature) |
+| `drop_small_chips` | Remove chips under 5,000 bytes, usually failed downloads (default true). Set false for imagery such as calm water, whose valid tiles compress below that |
+| `imagery_url` | Tile URL (`{z}/{x}/{y}`, 256 px tiles) used for every project's imagery, replacing the Tasking Manager imagery URL |
+| `label_files` | Folder or URL holding `project_<id>_labels.geojson` and `project_<id>_coverage.geojson`. Labels come from these files, and tiles must also lie inside the coverage |
 | `label_buffer_meters` | Widen labels by this many metres before masks are burned, so points and lines show |
 | `negative_ratio` | Keep at most this many empty tiles per labelled tile, per project, in the Parquet |
 | `split` | How tiles are split, see below |
@@ -70,8 +73,9 @@ Left-out tiles stay in the raw files and are counted on the card.
 | `selection` | How the labels were chosen |
 | `limitations` | List shown under Known limitations |
 | `sample_tiles` | Optional, sample tiles shown on the card (default 6, 0 for none) |
+| `label_source` | Optional, `name` and `attribution` of where the labels were mapped, when that is not OpenStreetMap |
 
-All keys except `sample_tiles` are required.
+All keys except `sample_tiles` and `label_source` are required.
 
 `--generate-parquet` fills the card template with counts, sample tiles, classes and source
 projects from the Parquet rows.
@@ -90,8 +94,8 @@ projects from the Parquet rows.
 ## How a build works
 
 1. Find Tasking Manager projects of the mapping type, at least 95% validated, with OpenAerialMap imagery.
-2. Download 256x256 tiles that lie fully inside tasks marked `VALIDATED`, with [geoml-toolkits](https://github.com/kshitijrajsharma/geoml-toolkits).
-3. Download the OSM features on those tiles from the [HOT Raw Data API](https://github.com/hotosm/raw-data-api) and clip them per tile.
+2. Download 256x256 tiles that lie fully inside tasks marked `VALIDATED`, and inside the `label_files` coverage when it is set, with [geoml-toolkits](https://github.com/kshitijrajsharma/geoml-toolkits).
+3. Download the OSM features on those tiles from the [HOT Raw Data API](https://github.com/hotosm/raw-data-api), or read them from `label_files`, and clip them per tile.
 4. Drop corrupt chips (the tile images), orphan labels, and chips with more than 1% transparent pixels (gaps at the survey edge).
 
 ## Output folder

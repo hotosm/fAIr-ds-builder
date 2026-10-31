@@ -10,6 +10,7 @@ import rasterio
 from geomltoolkits.downloader import osm as osm_downloader
 from geomltoolkits.downloader import tms as tms_downloader
 from rasterio.transform import from_origin
+from shapely.geometry import shape
 
 from hot_oam_dataset.dataset_builder import (
     DatasetConfig,
@@ -105,6 +106,31 @@ def test_corrupt_chip_removed(project_dir):
     assert stats["valid_pairs"] == 0
     assert stats["removed_corrupt_chips"] == 1
     assert not (project_dir / "chips" / "OAM-1-2-19.tif").exists()
+
+
+@pytest.mark.parametrize(("drop_small_chips", "kept"), [(True, 0), (False, 1)])
+def test_small_valid_chips_are_dropped_only_when_asked(project_dir, drop_small_chips, kept):
+    chip_path = project_dir / "chips" / "OAM-1-2-23.tif"
+    with rasterio.open(
+        chip_path,
+        "w",
+        driver="GTiff",
+        width=256,
+        height=256,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(0, 256, 1, 1),
+        compress="deflate",
+    ) as chip:
+        chip.write(np.full((3, 256, 256), 140, dtype=np.uint8))
+    _label(project_dir / "labels" / "OAM-1-2-23.geojson")
+    assert chip_path.stat().st_size < 5000
+
+    stats = validate_and_clean_project(project_dir, "OAM", 1, drop_small_chips=drop_small_chips)
+
+    assert stats["valid_pairs"] == kept
+    assert chip_path.exists() == bool(kept)
 
 
 def test_orphan_label_removed(project_dir):
@@ -398,6 +424,94 @@ def test_tiles_are_requested_only_inside_validated_tasks(tmp_path, mocker):
     aoi_path = download.call_args.args[2]
     aoi = json.loads(aoi_path.read_text())
     assert aoi["features"][0]["geometry"] == VALIDATED_HALF
+
+
+def _feature_collection(*geometries: dict, properties: dict | None = None) -> str:
+    features = [
+        {"type": "Feature", "properties": properties or {}, "geometry": geometry}
+        for geometry in geometries
+    ]
+    return json.dumps({"type": "FeatureCollection", "features": features})
+
+
+def test_label_files_are_cut_per_tile_without_calling_the_raw_data_api(tmp_path, mocker):
+    project_dir = tmp_path / "project_1"
+    project_dir.mkdir()
+    label_files = tmp_path / "label_files"
+    label_files.mkdir()
+    tile = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}
+    seagrass = {
+        "type": "Polygon",
+        "coordinates": [[[0.5, 0.2], [1.5, 0.2], [1.5, 0.8], [0.5, 0.8], [0.5, 0.2]]],
+    }
+    tags = {"osm_id": 7, "osm_type": "ways_poly", "tags": {"seamark:type": "seagrass"}}
+    (label_files / "project_1_labels.geojson").write_text(
+        _feature_collection(seagrass, properties=tags)
+    )
+
+    async def fake_download_tiles(**_kwargs):
+        (project_dir / "tiles.geojson").write_text(
+            _feature_collection(tile, properties={"title": "OAM-10-20-23"})
+        )
+
+    mocker.patch.object(tms_downloader, "download_tiles", side_effect=fake_download_tiles)
+    raw_data_api = mocker.patch.object(osm_downloader, "download_osm_data", autospec=True)
+    mocker.patch("hot_oam_dataset.dataset_builder.validate_and_clean_project", return_value={})
+    mocker.patch("hot_oam_dataset.dataset_builder._update_metadata_with_stats")
+    config = DatasetConfig(
+        output_dir=tmp_path, burn_binary_masks=False, label_files=str(label_files)
+    )
+
+    asyncio.run(
+        _download_chips_and_labels(
+            _project_record(), project_dir, project_dir / "aoi.geojson", config
+        )
+    )
+
+    raw_data_api.assert_not_called()
+    labels = gpd.read_file(project_dir / "labels" / "OAM-10-20-23.geojson")
+    assert labels["osm_id"].tolist() == [7]
+    assert labels.total_bounds.tolist() == [0.5, 0.2, 1.0, 0.8]
+
+
+def test_label_files_keep_tiles_inside_both_validated_tasks_and_their_coverage(tmp_path, mocker):
+    mocker.patch("hot_oam_dataset.dataset_builder.probe_imagery_url", return_value=True)
+    download = mocker.patch(
+        "hot_oam_dataset.dataset_builder._download_chips_and_labels", new_callable=mocker.MagicMock
+    )
+    mocker.patch("hot_oam_dataset.dataset_builder.asyncio.run")
+    label_files = tmp_path / "label_files"
+    label_files.mkdir()
+    coverage = {
+        "type": "Polygon",
+        "coordinates": [
+            [[96.025, 21.9], [96.1, 21.9], [96.1, 22.0], [96.025, 22.0], [96.025, 21.9]]
+        ],
+    }
+    (label_files / "project_1_coverage.geojson").write_text(_feature_collection(coverage))
+
+    build_project_dataset(
+        _project_record(), DatasetConfig(output_dir=tmp_path, label_files=str(label_files))
+    )
+
+    aoi = json.loads(download.call_args.args[2].read_text())
+    assert shape(aoi["features"][0]["geometry"]).bounds == (96.025, 21.9, 96.05, 22.0)
+
+
+def test_label_coverage_outside_the_validated_tasks_is_an_error(tmp_path, mocker):
+    mocker.patch("hot_oam_dataset.dataset_builder.probe_imagery_url", return_value=True)
+    label_files = tmp_path / "label_files"
+    label_files.mkdir()
+    elsewhere = {
+        "type": "Polygon",
+        "coordinates": [[[10.0, 10.0], [10.1, 10.0], [10.1, 10.1], [10.0, 10.1], [10.0, 10.0]]],
+    }
+    (label_files / "project_1_coverage.geojson").write_text(_feature_collection(elsewhere))
+
+    with pytest.raises(ValueError, match="does not overlap"):
+        build_project_dataset(
+            _project_record(), DatasetConfig(output_dir=tmp_path, label_files=str(label_files))
+        )
 
 
 def test_aggregate_lists_the_tag_values_used_across_projects():
